@@ -131,39 +131,7 @@ Schranke.
 
 ## Welche Wettbewerbe?
 
-Die Liste kommt aus der Spalte `slugs` in
-[`metadata/playground_overview.csv`](metadata/playground_overview.csv) — der
-UTF-8-Konvertierung der gemeinsamen Excel-Übersicht. Trägt jemand dort eine
-Zeile nach, zieht das Skript sie automatisch mit. Zeilen ohne Slug
-(Dez 2022, Nov/Dez 2026 — dort gibt es keinen Wettbewerb) werden übersprungen.
-
 Aktuell 83 Wettbewerbe: 23 Tabular Playground Series (2021–2022),
 26 in Season 3, je 12 in Season 4 und 5, 10 in Season 6.
 
-## Tests
 
-```bash
-python scripts/test_scripts.py
-```
-
-30 Prüfungen gegen einen lokalen HTTP-Server: Download, Entpacken,
-Wiederaufnahme, die HTTP-Fälle 401/403/404, Abwehr von Pfaden, die aus dem
-Zielordner herausführen, das Lesen des Tokens und die Merkmalsextraktion.
-Kaggle wird dabei nicht kontaktiert, ein Token ist nicht nötig.
-
-Gegen Kaggle selbst ist beides gelaufen: Season 4–6, 34 Wettbewerbe,
-926,9 MB Archive in 137,1 s, entpackt 3,7 GB. Die Merkmalsextraktion lief
-über alle 34 durch, und `aufgabe_vermutet` stimmt bei allen 34 mit der
-offiziellen Metrik aus der Übersichtstabelle überein — die Heuristik ist
-damit geprüft, nicht nur plausibel.
-
-Season 3 und die Tabular Playground Series 2021–2022 (49 Wettbewerbe) sind
-noch nicht geladen, dort fehlt die Regelzustimmung.
-
-## Was bewusst fehlt
-
-Keine Wiederholversuche bei Netzwerkfehlern, keine parallelen Downloads, keine
-Größenbegrenzung. Ein fehlgeschlagener Wettbewerb steht als `fehler` im Log;
-weil fertige Downloads übersprungen werden, reicht ein erneuter Lauf. Parallele
-Downloads wären schneller, würden aber die gemessenen Zeiten verfälschen, weil
-sich die Verbindungen die Bandbreite teilen.
