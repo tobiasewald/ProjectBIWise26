@@ -1,0 +1,35 @@
+﻿slug;n_zeilen;n_spalten;n_features;zielspalte;ziel_dtype;ziel_n_unique;aufgabe_vermutet;n_numerisch;n_kategorial;n_fast_eindeutig;n_fehlende_werte;anteil_fehlend_prozent;spalten_mit_fehlenden;train_mb
+playground-series-s4e1;165034;14;12;Exited;int64;2;binaer;9;3;0;0;0.0;0;11.8
+playground-series-s4e10;58645;13;11;loan_status;int64;2;binaer;7;4;0;0;0.0;0;3.4
+playground-series-s4e11;140700;20;18;Depression;int64;2;binaer;8;10;0;430876;15.312;9;15.6
+playground-series-s4e12;1200000;21;19;Premium Amount;float64;4794;regression;8;11;0;1203748;4.777;11;185.1
+playground-series-s4e2;20758;18;16;NObeyesdad;object;7;multiklasse;8;8;0;0;0.0;0;2.6
+playground-series-s4e3;19219;35;27;Pastry|Z_Scratch|K_Scatch|Stains|Dirtiness|Bumps|Other_Faults;;;multi_label;27;0;0;0;0.0;0;3.0
+playground-series-s4e4;90615;10;8;Rings;int64;28;regression;7;1;0;0;0.0;0;4.5
+playground-series-s4e5;1117957;22;20;FloodProbability;float64;83;regression;20;0;0;0;0.0;0;56.4
+playground-series-s4e6;76518;38;36;Target;object;3;multiklasse;36;0;0;0;0.0;0;9.0
+playground-series-s4e7;11504798;12;10;Response;int64;2;binaer;7;3;0;0;0.0;0;632.1
+playground-series-s4e8;3116945;22;20;class;object;2;binaer;3;17;0;15868508;23.141;17;160.5
+playground-series-s4e9;188533;13;11;price;int64;1569;regression;2;9;0;28954;1.181;3;26.5
+playground-series-s5e1;230130;6;4;num_sold;float64;4037;regression;0;4;0;8871;0.642;1;13.8
+playground-series-s5e10;517754;14;12;accident_risk;float64;98;regression;4;8;0;0;0.0;0;36.2
+playground-series-s5e11;593994;13;11;loan_paid_back;float64;2;binaer;5;6;0;0;0.0;0;53.4
+playground-series-s5e12;700000;26;24;diagnosed_diabetes;float64;2;binaer;18;6;0;0;0.0;0;79.4
+playground-series-s5e2;300000;11;9;Price;float64;48212;regression;2;7;0;57199;1.733;8;22.7
+playground-series-s5e3;2190;13;11;rainfall;int64;2;binaer;11;0;0;0;0.0;0;0.1
+playground-series-s5e4;750000;12;10;Listening_Time_minutes;float64;42807;regression;4;6;0;233124;2.59;3;66.8
+playground-series-s5e5;750000;9;7;Calories;float64;277;regression;6;1;0;0;0.0;0;33.8
+playground-series-s5e6;750000;10;8;Fertilizer Name;object;7;multiklasse;6;2;0;0;0.0;0;31.9
+playground-series-s5e7;18524;9;7;Personality;object;2;binaer;5;2;0;9196;5.516;7;0.7
+playground-series-s5e8;750000;18;16;y;int64;2;binaer;7;9;0;0;0.0;0;62.7
+playground-series-s5e9;524164;11;9;BeatsPerMinute;float64;14622;regression;9;0;0;0;0.0;0;59.0
+playground-series-s6e1;630000;13;11;exam_score;float64;805;regression;4;7;0;0;0.0;0;43.9
+playground-series-s6e10;699635;23;21;satisfaction;bool;2;binaer;17;4;0;292;0.002;1;64.1
+playground-series-s6e2;630000;15;13;Heart Disease;object;2;binaer;13;0;0;0;0.0;0;30.2
+playground-series-s6e3;594194;21;19;Churn;object;2;binaer;4;15;0;0;0.0;0;76.8
+playground-series-s6e4;630000;21;19;Irrigation_Need;object;3;multiklasse;11;8;0;0;0.0;0;76.4
+playground-series-s6e5;439140;16;14;PitNextLap;float64;2;binaer;11;3;0;0;0.0;0;51.2
+playground-series-s6e6;577347;12;10;class;object;3;multiklasse;8;2;6;0;0.0;0;95.3
+playground-series-s6e7;690088;15;13;health_condition;object;3;multiklasse;7;6;0;449496;4.342;13;59.8
+playground-series-s6e8;691369;14;12;addicted_label;int64;2;binaer;9;3;0;870360;8.992;12;42.8
+playground-series-s6e9;668665;15;13;Will_Buy_EV;object;2;binaer;7;6;0;0;0.0;0;42.6

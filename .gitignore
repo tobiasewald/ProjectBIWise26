@@ -1,0 +1,16 @@
+# Heruntergeladene Wettbewerbsdaten (gross, jederzeit reproduzierbar)
+data/
+
+# Logdateien der Downloadlaeufe - das Hauptlog ist ein Messergebnis und
+# gehoert versioniert, alles andere in logs/ nicht.
+logs/*
+!logs/download_log.csv
+
+# Kaggle-Zugangsdaten gehoeren nie ins Repository
+access_token
+kaggle.json
+
+__pycache__/
+*.pyc
+.venv/
+regeln_todo.txt

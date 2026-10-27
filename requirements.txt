@@ -1,0 +1,5 @@
+# Download der Kaggle-Playground-Datensaetze
+requests>=2.31
+
+# Fuer die anschliessende Auswertung der Datensaetze
+pandas>=2.0
