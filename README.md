@@ -16,7 +16,7 @@ pip install -r requirements.txt
 ```
 
 Token holen unter [kaggle.com/settings](https://www.kaggle.com/settings) →
-Abschnitt **API** → **Create New Token**. Es beginnt mit `KGAT_`. Gesucht wird
+Abschnitt **API** → **Create New Token**. Beginnt mit `KGAT_`. Gesucht wird
 in dieser Reihenfolge:
 
 | Priorität | Ort |
