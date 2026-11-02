@@ -6,6 +6,7 @@ Kaggle wird nicht kontaktiert, ein Token ist nicht noetig.
     python scripts/test_scripts.py
 """
 
+import csv
 import http.server
 import io
 import os
@@ -171,6 +172,32 @@ check("binaeres Ziel erkannt", row["aufgabe_vermutet"] == "binaer", row["aufgabe
 check("fehlt-Anteil berechnet", row["anteil_fehlend_prozent"] > 0, str(row["anteil_fehlend_prozent"]))
 
 check("ohne train.csv -> None", ef.features("gibt-es-nicht") is None)
+
+print("\n=== Lauf mit --only loescht die anderen Zeilen nicht ===")
+# Unbedingt umbiegen, sonst schreibt der Test in die echte Merkmalstabelle.
+ef.OUT_FILE = WORK / "features.csv"
+
+
+def slugs_in_tabelle():
+    with open(ef.OUT_FILE, newline="", encoding="utf-8-sig") as handle:
+        return {r["slug"] for r in csv.DictReader(handle, delimiter=";")}
+
+
+argv_vorher = sys.argv
+try:
+    sys.argv = ["extract_features.py"]
+    ef.main()
+    check("erst beide Datensaetze drin", slugs_in_tabelle() == {"gut", "luecken"},
+          str(sorted(slugs_in_tabelle())))
+
+    sys.argv = ["extract_features.py", "--only", "gut"]
+    ef.main()
+    check("nach --only immer noch beide", slugs_in_tabelle() == {"gut", "luecken"},
+          str(sorted(slugs_in_tabelle())))
+finally:
+    sys.argv = argv_vorher
+
+check("n_fast_eindeutig ist weg", "n_fast_eindeutig" not in ef.COLUMNS)
 
 server.shutdown()
 shutil.rmtree(WORK, ignore_errors=True)

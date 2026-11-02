@@ -103,7 +103,6 @@ Schreibt `metadata/dataset_features.csv`, eine Zeile pro Datensatz:
 | `ziel_dtype`, `ziel_n_unique` | Datentyp und Anzahl verschiedener Werte |
 | `aufgabe_vermutet` | `binaer`, `multiklasse`, `regression`, `multi_label` |
 | `n_numerisch`, `n_kategorial` | Datentypen der Features |
-| `n_fast_eindeutig` | Features mit über 99 % verschiedenen Werten |
 | `n_fehlende_werte` | fehlende Zellen in `train.csv` |
 | `anteil_fehlend_prozent` | Anteil fehlender Zellen |
 | `spalten_mit_fehlenden` | wie viele Spalten betroffen sind |
@@ -120,11 +119,15 @@ numerisch mit mehr als 20 Werten → Regression, sonst Multiklasse. Für die
 Methodik der Arbeit sollte das gegen die offizielle Metrik aus der
 Übersichtstabelle geprüft werden.
 
+Ein Lauf mit `--only` aktualisiert nur die betroffenen Zeilen; die übrigen
+Datensätze bleiben in der Tabelle stehen.
+
 **Zu `n_features`:** Herausgerechnet werden nur die Zielspalte(n) und eine
 Spalte namens `id`. Weitere Identifikatoren zählen mit — bei S4E1 etwa
 `CustomerId` und `Surname`. Die lassen sich nicht zuverlässig automatisch
-erkennen: `n_fast_eindeutig` findet sie dort nicht, weil die synthetischen
-Daten Dubletten enthalten (`CustomerId` ist nur zu 14 % eindeutig). Welche
+erkennen. Über die Eindeutigkeit geht es nicht: Bei S4E1 ist `CustomerId`
+nur zu 14 % und `Surname` nur zu 1,7 % eindeutig, weil die synthetischen
+Daten Dubletten enthalten — während `EstimatedSalary` auf 33 % kommt. Welche
 Spalten ins Modell gehören, ist damit eine Entscheidung fürs Preprocessing
 (Gliederungspunkt 3.3), nicht für dieses Skript. `n_features` ist eine obere
 Schranke.
@@ -146,9 +149,10 @@ Aktuell 83 Wettbewerbe: 23 Tabular Playground Series (2021–2022),
 python scripts/test_scripts.py
 ```
 
-30 Prüfungen gegen einen lokalen HTTP-Server: Download, Entpacken,
+33 Prüfungen gegen einen lokalen HTTP-Server: Download, Entpacken,
 Wiederaufnahme, die HTTP-Fälle 401/403/404, Abwehr von Pfaden, die aus dem
-Zielordner herausführen, das Lesen des Tokens und die Merkmalsextraktion.
+Zielordner herausführen, das Lesen des Tokens, die Merkmalsextraktion und
+dass ein Lauf mit `--only` die übrigen Tabellenzeilen stehen lässt.
 Kaggle wird dabei nicht kontaktiert, ein Token ist nicht nötig.
 
 Gegen Kaggle selbst ist beides gelaufen: Season 4–6, 34 Wettbewerbe,

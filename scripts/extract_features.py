@@ -8,6 +8,9 @@ mit der Uebersichtstabelle verknuepfen.
 Die Zielspalte wird bestimmt als die Spalte, die in train.csv steht, in
 test.csv aber fehlt - bei den Playground-Wettbewerben ist das zuverlaessig.
 
+Ein Lauf mit --only aktualisiert nur die betroffenen Zeilen, die uebrigen
+bleiben in der Tabelle stehen.
+
     python scripts/extract_features.py
     python scripts/extract_features.py --only s4e1
 """
@@ -33,7 +36,6 @@ COLUMNS = [
     "aufgabe_vermutet",
     "n_numerisch",
     "n_kategorial",
-    "n_fast_eindeutig",
     "n_fehlende_werte",
     "anteil_fehlend_prozent",
     "spalten_mit_fehlenden",
@@ -87,15 +89,6 @@ def features(slug):
     n_missing = int(train.isna().sum().sum())
     n_cells = train.shape[0] * train.shape[1]
 
-    # Spalten, die fast nur verschiedene Werte enthalten. Das sind haeufig
-    # Identifikatoren wie CustomerId oder Surname, die nichts vorhersagen -
-    # bei stetigen Groessen kann es aber auch Zufall sein. Darum nur zaehlen,
-    # nicht aussortieren.
-    n_rows = max(train.shape[0], 1)
-    n_nearly_unique = sum(
-        1 for c in feature_columns if feature_frame[c].nunique(dropna=True) / n_rows > 0.99
-    )
-
     return {
         "slug": slug,
         "n_zeilen": int(train.shape[0]),
@@ -107,12 +100,20 @@ def features(slug):
         "aufgabe_vermutet": aufgabe,
         "n_numerisch": feature_frame.select_dtypes(include="number").shape[1],
         "n_kategorial": feature_frame.select_dtypes(exclude="number").shape[1],
-        "n_fast_eindeutig": n_nearly_unique,
         "n_fehlende_werte": n_missing,
         "anteil_fehlend_prozent": round(100 * n_missing / n_cells, 3) if n_cells else 0,
         "spalten_mit_fehlenden": int((train.isna().sum() > 0).sum()),
         "train_mb": round(train_path.stat().st_size / 1_048_576, 1),
     }
+
+
+def read_existing():
+    """Bereits vorhandene Zeilen der Tabelle, nach slug."""
+    if not OUT_FILE.is_file():
+        return {}
+    with open(OUT_FILE, newline="", encoding="utf-8-sig") as handle:
+        rows = csv.DictReader(handle, delimiter=";")
+        return {r["slug"]: r for r in rows if (r.get("slug") or "").strip()}
 
 
 def main():
@@ -153,13 +154,24 @@ def main():
     if not rows:
         raise SystemExit("Nichts auszuwerten.")
 
+    # Vorhandene Zeilen uebernehmen, sonst loescht ein Lauf mit --only alle
+    # anderen Datensaetze aus der Tabelle.
+    alle = read_existing()
+    for row in rows:
+        alle[row["slug"]] = row
+
     OUT_FILE.parent.mkdir(parents=True, exist_ok=True)
     with open(OUT_FILE, "w", newline="", encoding="utf-8-sig") as handle:
-        writer = csv.DictWriter(handle, fieldnames=COLUMNS, delimiter=";")
+        # extrasaction und restval, weil aeltere Zeilen andere Spalten haben
+        # koennen als COLUMNS.
+        writer = csv.DictWriter(
+            handle, fieldnames=COLUMNS, delimiter=";", extrasaction="ignore", restval=""
+        )
         writer.writeheader()
-        writer.writerows(rows)
+        writer.writerows(alle[slug] for slug in sorted(alle))
 
-    print("\n" + str(len(rows)) + " Datensaetze ausgewertet -> " + str(OUT_FILE))
+    print("\n{} ausgewertet, {} Datensaetze in der Tabelle -> {}".format(
+        len(rows), len(alle), OUT_FILE))
 
 
 if __name__ == "__main__":
