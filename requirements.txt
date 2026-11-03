@@ -1,5 +1,24 @@
 # Download der Kaggle-Playground-Datensaetze
 requests>=2.31
 
-# Fuer die anschliessende Auswertung der Datensaetze
+# Auswertung der Datensaetze
 pandas>=2.0
+numpy>=1.26
+scipy>=1.11
+
+# Die Modelle sind exakt festgenagelt, nicht mit >=. Grund: Bei Forschungs-
+# frage 1 sind die Voreinstellungen dieser beiden Bibliotheken der
+# Untersuchungsgegenstand. XGBoost hat sie zwischen 2.x und 3.x geaendert,
+# mit einer anderen Version kommen also andere Zahlen heraus und die
+# Messungen von zwei Rechnern sind nicht mehr vergleichbar.
+scikit-learn==1.7.2
+xgboost==3.0.5
+
+# Fuer die Auswertung der Raenge (Friedman, Nemenyi, CD-Diagramm)
+matplotlib>=3.8
+
+# Die Fundamentmodelle stehen bewusst NICHT hier. TabPFN laedt PyTorch und
+# Modellgewichte nach, TabFM wird aus dem Git-Repository installiert und legt
+# scikit-learn auf 1.6.0 fest - das wuerde die Zahlen von rf und xgb
+# veraendern. Beide werden im Colab-Notebook in eigenen Laufzeiten
+# installiert, siehe notebooks/colab_run_models.ipynb.
