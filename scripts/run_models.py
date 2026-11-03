@@ -15,8 +15,8 @@ Zwei Varianten:
 
 Die Deckelung ist keine technische Grenze, sondern eine methodische
 Entscheidung: Alle Modelle sollen dieselbe Datenmenge sehen. Die
-Fundamentmodelle lesen ihre Trainingsdaten als Kontext und sind darin
-begrenzt - TabPFN-2 bei rund 10.000 Zeilen, TabFM voreingestellt bei 100.
+Fundamentmodelle lesen ihre Trainingsdaten als Kontext statt daraus zu
+lernen und sind darin begrenzt - TabFM etwa voreingestellt bei 100 Zeilen.
 
 Die Vorverarbeitung ist fuer alle Modelle gleich (Median fuer Zahlen,
 Ordinalkodierung fuer Text) und wird je Fold nur auf den Trainingsdaten
@@ -34,6 +34,7 @@ laufenden Datensatz.
 
 import argparse
 import csv
+import os
 import platform
 import re
 import shutil
@@ -76,12 +77,20 @@ COLUMNS = [
 KLASSIFIKATION = {"binaer", "multiklasse"}
 MODELLE = ["rf", "xgb", "tabpfn", "tabfm"]
 
-# TabPFN-Gewichtsstand. V2 steht unter der Prior Labs License (Apache 2.0 mit
-# Namensnennung) und laedt ohne Konto. Ab V2_5 verlangt Prior Labs, dass die
-# Lizenz im Browser bestaetigt und ein API-Key eingetragen wird - dann kann
-# nicht jeder in der Gruppe das Projekt einfach aufsetzen. Umstellbar ueber
-# --tabpfn-version, wenn ein Key vorliegt.
-TABPFN_VERSION = "V2"
+# TabPFN-Gewichtsstand. Gerechnet wird in jedem Fall lokal; der Unterschied
+# liegt nur darin, ob die Gewichte frei heruntergeladen werden duerfen.
+#
+#   V2     Prior Labs License (Apache 2.0 mit Namensnennung), laedt ohne Konto.
+#   V3_5   aktueller Stand. Prior Labs verlangt einmal, dass die Lizenz
+#          tabpfn-3-5-license-v1.0 im Konto bestaetigt wird; geprueft wird das
+#          ueber die Umgebungsvariable TABPFN_TOKEN (API-Key aus
+#          https://ux.priorlabs.ai/account). Die Gewichtsdatei selbst liegt
+#          offen auf Hugging Face, ein Konto dort ist nicht noetig.
+#
+# V3_5 ist der Standard, weil die Checkpoint-Datei ein Datum im Namen traegt
+# (tabpfn-v3.5-20260909.safetensors) und der gemessene Stand damit zitierbar
+# ist. Umstellbar ueber --tabpfn-version.
+TABPFN_VERSION = "V3_5"
 
 # TabFM laedt seine Gewichte von Hugging Face. Das darf nicht pro Fold neu
 # passieren, deshalb einmal pro Aufgabenart hier merken.
@@ -144,6 +153,13 @@ def modell(name, aufgabe):
     # Die beiden Fundamentmodelle werden erst hier importiert, damit ein Lauf
     # mit nur rf und xgb ohne torch und ohne Gewichte funktioniert.
     if name == "tabpfn":
+        # Ohne gueltigen TABPFN_TOKEN wuerde tabpfn versuchen, einen Browser
+        # zu oeffnen, und auf einen Rueckruf an localhost warten. In einem
+        # Stapellauf - und in Colab, wo localhost nicht der eigene Rechner
+        # ist - haengt das nur. Mit dieser Variable bricht es stattdessen
+        # sofort mit einer Anleitung ab.
+        os.environ.setdefault("TABPFN_NO_BROWSER", "1")
+
         from tabpfn import TabPFNClassifier, TabPFNRegressor
         from tabpfn.constants import ModelVersion
 
@@ -189,13 +205,23 @@ def read_features():
 
 
 def read_done():
-    """Bereits gerechnete Kombinationen (slug, modell, variante)."""
+    """Erfolgreich gerechnete Kombinationen (slug, modell, variante).
+
+    Nur status=ok zaehlt als fertig. Eine Fehlerzeile ist kein Ergebnis: Wer
+    einen Lauf ohne TABPFN_TOKEN startet, bekommt fuer jeden Datensatz eine
+    Zeile mit TabPFNLicenseError - wuerden die als fertig gelten, liefe der
+    naechste Lauf nach dem Eintragen des Tokens komplett ins Leere und man
+    haette am Ende eine Tabelle ohne TabPFN, ohne es zu merken.
+
+    Die Fehlerzeilen bleiben in der Datei stehen; die Auswertung filtert sie.
+    """
     if not OUT_FILE.is_file():
         return set()
     with open(OUT_FILE, newline="", encoding="utf-8-sig") as handle:
         return {
             (r["slug"], r["modell"], r["variante"])
             for r in csv.DictReader(handle, delimiter=";")
+            if r.get("status") == "ok"
         }
 
 

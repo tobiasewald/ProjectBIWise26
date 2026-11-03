@@ -45,6 +45,10 @@ Beim Start gibt das Skript nur aus, aus welcher *Quelle* das Token kam, nie den
 Wert. Solange der Platzhalter drinsteht, sagt es das ausdrücklich, statt in
 einen 401 zu laufen.
 
+Für die Datensätze und für Wald und Boosting ist das alles. Nur TabPFN braucht
+zusätzlich einen Prior-Labs-Key in `TABPFN_TOKEN`, und zwar allein zur
+Lizenzprüfung — siehe [Zur TabPFN-Version](#die-fundamentmodelle).
+
 ## 1. Daten herunterladen
 
 ```bash
@@ -190,9 +194,9 @@ gedacht. Solche Läufe gehören nicht in die Ergebnistabelle.
 
 ### Zwei Varianten
 
-Die Fundamentmodelle lesen ihre Trainingsdaten als Kontext und sind darin
-begrenzt: TabPFN-2 verträgt rund 10.000 Zeilen, TabFM liest voreingestellt
-sogar nur 100. Von den 34 geladenen Datensätzen liegt genau einer unter 10.000
+Die Fundamentmodelle lesen ihre Trainingsdaten als Kontext, statt daraus zu
+lernen, und sind darin begrenzt: TabFM liest voreingestellt nur 100 Zeilen.
+Von den 34 geladenen Datensätzen liegt genau einer unter 10.000
 (S5E3 mit 2.190 Zeilen). Daraus folgen zwei Durchläufe:
 
 | Variante | Zeilen | Modelle | Zweck |
@@ -205,12 +209,12 @@ erhalten bleiben, und mit festem Startwert — alle Modelle sehen damit genau
 dieselben Zeilen. Bei 10.000 Zeilen und fünf Folds trainiert ein Modell auf
 8.000 Zeilen.
 
-Der eigentliche Grund für die Deckelung ist **nicht** eine technische Grenze,
-sondern die Vergleichbarkeit: Alle Modelle sollen dieselbe Datenmenge sehen.
-Rein technisch könnte der neuere Stand TabPFN-3.5 bis zu einer Million Zeilen
-verarbeiten — aber dessen Gewichte sind lizenzpflichtig (s. u.), und TabFM
-liest ohnehin weniger. Die 10.000 sind damit eine methodische Entscheidung,
-die in der Arbeit so begründet werden sollte.
+Der Grund für die Deckelung ist **nicht** eine technische Grenze, sondern die
+Vergleichbarkeit: Alle Modelle sollen dieselbe Datenmenge sehen. TabPFN-3.5
+könnte rein technisch bis zu einer Million Zeilen verarbeiten, TabFM liest
+voreingestellt 100. Ohne Deckelung würde man also messen, wie viel Kontext ein
+Modell zulässt, und nicht, wie gut es damit umgeht. Die 10.000 sind damit eine
+methodische Entscheidung, die in der Arbeit so begründet werden sollte.
 
 ### Die Fundamentmodelle
 
@@ -218,23 +222,35 @@ die in der Arbeit so begründet werden sollte.
 |---|---|---|---|
 | `rf` | Random Forest (scikit-learn) | — | — |
 | `xgb` | XGBoost | — | — |
-| `tabpfn` | [TabPFN](https://github.com/PriorLabs/TabPFN) | TabPFN-2 | rund 10.000 Zeilen, GPU nötig |
+| `tabpfn` | [TabPFN](https://github.com/PriorLabs/TabPFN) | TabPFN-3.5 | GPU nötig (auf CPU Grenze bei 5.000 Zeilen) |
 | `tabfm` | [TabFM](https://github.com/google-research/tabfm) (Google Research) | v1.0.0 | 100 Kontextzeilen, 500 Merkmale |
 
 Beide Fundamentmodelle sind scikit-learn-kompatibel und werden erst beim
 Aufruf importiert — ein Lauf mit nur `rf` und `xgb` braucht weder PyTorch noch
 Modellgewichte.
 
-**Zur TabPFN-Version:** Verwendet wird **TabPFN-2**, nicht der neuere Standard
-TabPFN-3.5. Grund ist nicht die Leistung, sondern die Lizenz: Ab TabPFN-2.5
-verlangt Prior Labs ein Konto, eine im Browser bestätigte Lizenz und einen
-API-Key. Damit könnte nicht mehr jeder in der Gruppe das Projekt einfach
-aufsetzen. TabPFN-2 steht unter der Prior Labs License (Apache 2.0 mit
-Namensnennung) und lädt ohne Konto. Mit Key umstellbar über
-`--tabpfn-version V3_5`.
+**Zur TabPFN-Version:** Verwendet wird **TabPFN-3.5**, der aktuelle Stand. Die
+Gewichtsdatei heißt `tabpfn-v3.5-20260909.safetensors` und trägt damit ein Datum
+im Namen — der gemessene Stand ist dadurch zitierbar. Er steht zusätzlich in
+jeder Ergebniszeile in der Spalte `modell_version`; bei Fundamentmodellen
+entscheidet er über das Ergebnis.
 
-Der Gewichtsstand steht in jeder Ergebniszeile in der Spalte `modell_version` —
-bei Fundamentmodellen entscheidet er über das Ergebnis.
+Prior Labs verlangt für die Gewichte ab TabPFN-2.5 einmalig, dass die Lizenz
+(bei 3.5: `tabpfn-3-5-license-v1.0`) im Konto auf <https://ux.priorlabs.ai>
+bestätigt wird. Geprüft wird das über einen API-Key, der in der
+Umgebungsvariablen `TABPFN_TOKEN` erwartet wird; in Colab kommt er aus einem
+Secret gleichen Namens. Die Gewichtsdatei selbst liegt offen auf Hugging Face,
+ein Konto dort ist nicht nötig.
+
+**Gerechnet wird in jedem Fall lokal.** Der Key dient allein der Lizenzprüfung,
+es gehen keine Daten an Prior Labs. Das wäre das separate Paket `tabpfn-client`,
+das die Berechnung auf deren Servern ausführt und das wir nicht verwenden — es
+bedient laut Prior Labs andere Modelllinien (`Plus`, `Thinking`) als die
+veröffentlichten Gewichte und wäre für eine Arbeit nicht nachprüfbar.
+
+Wer keinen Key hat, kommt mit `--tabpfn-version V2` ohne jede Anmeldung
+durch. TabPFN-2 steht unter der Prior Labs License (Apache 2.0 mit
+Namensnennung); auf CPU gilt dort allerdings schon ab 1.000 Zeilen eine Grenze.
 
 **Getrennte Umgebungen nötig:** TabFM legt seine Abhängigkeiten fest auf
 `scikit-learn==1.6.0` und `torch==2.12.1`. Unsere Zahlen für Wald und XGBoost
@@ -323,6 +339,13 @@ Spalten: `metrik_code`, `richtung`, `wert_mittel`, `wert_std`, `werte_folds`
 Jede fertige Kombination wird **sofort angehängt** und beim nächsten Lauf
 übersprungen. Eine abgebrochene Colab-Sitzung kostet also nur den gerade
 laufenden Datensatz. Mit `--neu` wird neu gerechnet.
+
+Übersprungen wird nur, was `status = ok` hat. Eine Fehlerzeile ist kein
+Ergebnis und wird beim nächsten Lauf erneut versucht — sonst würde ein Lauf,
+der etwa am fehlenden `TABPFN_TOKEN` scheitert, alle Kombinationen als „fertig"
+markieren und die Tabelle bliebe stillschweigend ohne TabPFN. Die Fehlerzeilen
+bleiben in der Datei stehen; die Auswertung filtert sie. Steht dieselbe
+Kombination nach einem `--neu`-Lauf zweimal drin, gilt die letzte Zeile.
 
 `status` ist `ok`, `fehler`, `metrik_passt_nicht` (Metrik und erkannter
 Aufgabentyp gehen nicht zusammen) oder `metrik_unmoeglich` (z. B. RMSLE bei

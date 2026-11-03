@@ -59,6 +59,11 @@ def lade_ergebnisse(pfad, variante, modelle):
     if ok.empty:
         raise SystemExit("Keine Ergebnisse mit status=ok fuer Variante " + variante)
 
+    # Nach einem Lauf mit --neu steht dieselbe Kombination zweimal in der
+    # Datei. pivot_table wuerde beide stillschweigend mitteln, also einen Wert
+    # ausgeben, den kein Lauf gemessen hat. Die jeweils letzte Zeile gewinnt.
+    ok = ok.drop_duplicates(subset=["slug", "modell"], keep="last")
+
     # Aeltere Ergebnisdateien haben die Spalte noch nicht.
     umgebungen = (sorted(ok["umgebung"].dropna().unique())
                   if "umgebung" in ok.columns else [])

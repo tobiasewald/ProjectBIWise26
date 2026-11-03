@@ -304,6 +304,20 @@ with open(rm.OUT_FILE, newline="", encoding="utf-8-sig") as handle:
     zeilen_erg = list(csv.DictReader(handle, delimiter=";"))
 check("Kopfzeile nur einmal", len(zeilen_erg) == 2, str(len(zeilen_erg)))
 
+# Ein Lauf ohne TABPFN_TOKEN schreibt fuer jeden Datensatz eine Fehlerzeile.
+# Wuerden die als fertig gelten, liefe der naechste Lauf nach dem Eintragen
+# des Tokens ins Leere und die Tabelle bliebe ohne TabPFN.
+rm.append_row({
+    "slug": "mini", "modell": "tabpfn", "variante": "n10000",
+    "status": "fehler", "hinweis": "TabPFNLicenseError: kein Token",
+})
+fertig_nach_fehler = rm.read_done()
+check("Fehlerzeile gilt nicht als fertig",
+      ("mini", "tabpfn", "n10000") not in fertig_nach_fehler,
+      str(sorted(fertig_nach_fehler)))
+check("erfolgreiche Zeilen bleiben fertig",
+      ("mini", "rf", "n10000") in fertig_nach_fehler)
+
 print("\n=== Durchlauf: unpassende Metrik wird gemeldet ===")
 schief = rm.rechne("mini", "rf", "n10000", zeile_mini, "RMSE")
 check("Status metrik_passt_nicht", schief["status"] == "metrik_passt_nicht", schief["status"])
@@ -419,6 +433,16 @@ werte_g, richtung_g, metrik_g, fehlend_g, umg_g = ar.lade_ergebnisse(
 check("unvollstaendiger Datensatz faellt raus", fehlend_g == ["d3"], str(fehlend_g))
 check("zwei vollstaendige bleiben", len(werte_g) == 2, str(len(werte_g)))
 check("Umgebung wird gemeldet", umg_g == ["test"], str(umg_g))
+
+# Nach einem Lauf mit --neu steht dieselbe Kombination zweimal in der Datei.
+# pivot_table wuerde beide mitteln: aus 0.9 und 0.5 wuerde 0.7 - ein Wert, den
+# kein Lauf gemessen hat. Gelten soll die letzte Zeile.
+doppelt_datei = WORK / "ergebnisse_doppelt.csv"
+zeilen_doppelt = list(zeilen_rang) + ["d1;rf;n10000;ok;0.5;1;auc;test"]
+doppelt_datei.write_text("\n".join(zeilen_doppelt) + "\n", encoding="utf-8-sig")
+werte_d, _, _, _, _ = ar.lade_ergebnisse(doppelt_datei, "n10000", None)
+check("Doppelzeile wird nicht gemittelt",
+      abs(werte_d.loc["d1", "rf"] - 0.5) < 1e-9, str(werte_d.loc["d1", "rf"]))
 
 fehlt_datei = WORK / "ohne_richtung.csv"
 fehlt_datei.write_text("slug;modell;variante;status;wert_mittel;metrik_code\n", encoding="utf-8-sig")
