@@ -1,6 +1,6 @@
 # Kaggle Playground – Datenbeschaffung
 
-Vier Skripte für Forschungsfrage 1:
+Fünf Skripte für Forschungsfrage 1:
 
 1. **[`scripts/download_competitions.py`](scripts/download_competitions.py)** —
    lädt die Datensätze aller Playground-Wettbewerbe über die Kaggle-API und
@@ -8,11 +8,14 @@ Vier Skripte für Forschungsfrage 1:
 2. **[`scripts/extract_features.py`](scripts/extract_features.py)** —
    liest die geladenen Datensätze und schreibt Basis-Merkmale
    (Zeilen, Features, Datentypen, fehlende Werte, Zielspalte) in eine CSV.
-3. **[`scripts/run_models.py`](scripts/run_models.py)** —
+3. **[`scripts/merge_basicdata.py`](scripts/merge_basicdata.py)** —
+   führt Wettbewerbsübersicht, extrahierte Merkmale und Download-Log in einer
+   Tabelle zusammen.
+4. **[`scripts/run_models.py`](scripts/run_models.py)** —
    lässt Random Forest, XGBoost, TabPFN und TabFM ungetunt über die
    Datensätze laufen und bewertet mit der Metrik, die Kaggle für den
    jeweiligen Wettbewerb vorgibt.
-4. **[`scripts/aggregate_ranks.py`](scripts/aggregate_ranks.py)** —
+5. **[`scripts/aggregate_ranks.py`](scripts/aggregate_ranks.py)** —
    fasst die Ergebnisse über alle Datensätze zu mittleren Rängen zusammen und
    prüft die Unterschiede statistisch.
 
@@ -142,6 +145,19 @@ Daten Dubletten enthalten — während `EstimatedSalary` auf 33 % kommt. Welche
 Spalten ins Modell gehören, ist damit eine Entscheidung fürs Preprocessing
 (Gliederungspunkt 3.3), nicht für dieses Skript. `n_features` ist eine obere
 Schranke.
+
+### Basisdaten zusammenführen
+
+```bash
+python scripts/merge_basicdata.py
+```
+
+Schreibt `metadata/basicdata.csv` mit einer Zeile pro Wettbewerb aus
+`playground_overview.csv`. Die Tabellen werden über den Slug verbunden
+(`slugs` in der Übersicht, `slug` in den anderen Dateien); dadurch bleiben
+auch Wettbewerbe ohne heruntergeladene Daten oder extrahierte Merkmale
+enthalten. Da `download_log.csv` Einträge anhängt, wird daraus pro Wettbewerb
+der letzte Logeintrag verwendet. Fehlende Werte bleiben leer.
 
 ## 3. Modelle durchlaufen lassen
 
@@ -395,5 +411,3 @@ Wald neunmal, und der Wilcoxon-Test gibt dafür trotzdem nur p = 0,27.
 
 Aktuell 83 Wettbewerbe: 23 Tabular Playground Series (2021–2022),
 26 in Season 3, je 12 in Season 4 und 5, 10 in Season 6.
-
-
