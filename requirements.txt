@@ -5,6 +5,7 @@ requests>=2.31
 pandas>=2.0
 numpy>=1.26
 scipy>=1.11
+seaborn>=0.13.2
 
 # Die Modelle sind exakt festgenagelt, nicht mit >=. Grund: Bei Forschungs-
 # frage 1 sind die Voreinstellungen dieser beiden Bibliotheken der
@@ -13,6 +14,7 @@ scipy>=1.11
 # Messungen von zwei Rechnern sind nicht mehr vergleichbar.
 scikit-learn==1.7.2
 xgboost==3.0.5
+
 
 # Fuer die Auswertung der Raenge (Friedman, Nemenyi, CD-Diagramm)
 matplotlib>=3.8
