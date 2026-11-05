@@ -31,11 +31,13 @@ COLUMNS = [
     "n_spalten",
     "n_features",
     "zielspalte",
+    "n_zielspalten",
     "ziel_dtype",
     "ziel_n_unique",
     "aufgabe_vermutet",
     "n_numerisch",
     "n_kategorial",
+    "n_time",
     "n_fehlende_werte",
     "anteil_fehlend_prozent",
     "spalten_mit_fehlenden",
@@ -95,17 +97,42 @@ def features(slug):
         "n_spalten": int(train.shape[1]),
         "n_features": len(feature_columns),
         "zielspalte": "|".join(targets),
+        "n_zielspalten": len(targets),
         "ziel_dtype": ziel_dtype,
         "ziel_n_unique": ziel_n_unique,
         "aufgabe_vermutet": aufgabe,
         "n_numerisch": feature_frame.select_dtypes(include="number").shape[1],
         "n_kategorial": feature_frame.select_dtypes(exclude="number").shape[1],
+        "n_time": count_time_columns(feature_frame),
         "n_fehlende_werte": n_missing,
         "anteil_fehlend_prozent": round(100 * n_missing / n_cells, 3) if n_cells else 0,
         "spalten_mit_fehlenden": int((train.isna().sum() > 0).sum()),
         "train_mb": round(train_path.stat().st_size / 1_048_576, 1),
     }
 
+def count_time_columns(df):
+    n_time = 0
+
+    for col in df.columns:
+        # Bereits erkannte Datetime-Spalten
+        if pd.api.types.is_datetime64_any_dtype(df[col]):
+            n_time += 1
+            continue
+
+        # String-Spalten auf Datum/Zeit prüfen
+        if df[col].dtype == "object" or pd.api.types.is_string_dtype(df[col]):
+            values = df[col].dropna()
+
+            if len(values) == 0:
+                continue
+
+            parsed = pd.to_datetime(values, errors="coerce", format="mixed")
+
+            # Mindestens 80 % der Werte müssen als Datum/Zeit erkannt werden
+            if parsed.notna().mean() >= 0.8:
+                n_time += 1
+
+    return n_time
 
 def read_existing():
     """Bereits vorhandene Zeilen der Tabelle, nach slug."""
