@@ -111,9 +111,11 @@ Schreibt `metadata/dataset_features.csv`, eine Zeile pro Datensatz:
 | `n_zeilen`, `n_spalten` | Größe von `train.csv` |
 | `n_features` | Spalten ohne `id` und ohne Zielspalte |
 | `zielspalte` | aus der Differenz train/test bestimmt (s. u.) |
+| `n_zielspalten` | Anzahl der erkannten Zielspalten |
 | `ziel_dtype`, `ziel_n_unique` | Datentyp und Anzahl verschiedener Werte |
 | `aufgabe_vermutet` | `binaer`, `multiklasse`, `regression`, `multi_label` |
 | `n_numerisch`, `n_kategorial` | Datentypen der Features |
+| `n_time` | Anzahl der als Datum/Zeit erkannten Features |
 | `n_fehlende_werte` | fehlende Zellen in `train.csv` |
 | `anteil_fehlend_prozent` | Anteil fehlender Zellen |
 | `spalten_mit_fehlenden` | wie viele Spalten betroffen sind |
@@ -395,5 +397,4 @@ Wald neunmal, und der Wilcoxon-Test gibt dafür trotzdem nur p = 0,27.
 
 Aktuell 83 Wettbewerbe: 23 Tabular Playground Series (2021–2022),
 26 in Season 3, je 12 in Season 4 und 5, 10 in Season 6.
-
 
