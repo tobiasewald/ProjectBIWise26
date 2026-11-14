@@ -190,7 +190,7 @@ nicht vergleichbar und ein Versionsunterschied bei XGBoost würde unbemerkt
 andere Zahlen liefern.
 
 Deshalb hält jede Ergebniszeile in der Spalte `umgebung` fest, wo sie
-entstanden ist (`colab py3.12.10 skl1.7.2 xgb3.0.5`). Gemischte Messungen
+entstanden ist (`colab py3.13.18 skl1.6.1 xgb3.4.1`). Gemischte Messungen
 fallen damit auf, statt still in der Tabelle zu liegen.
 
 Das Notebook holt jeden Datensatz von Kaggle, rechnet ihn und löscht ihn
@@ -279,12 +279,16 @@ Wer keinen Key hat, kommt mit `--tabpfn-version V2` ohne jede Anmeldung
 durch. TabPFN-2 steht unter der Prior Labs License (Apache 2.0 mit
 Namensnennung); auf CPU gilt dort allerdings schon ab 1.000 Zeilen eine Grenze.
 
-**Getrennte Umgebungen nötig:** TabFM legt seine Abhängigkeiten fest auf
-`scikit-learn==1.6.0` und `torch==2.12.1`. Unsere Zahlen für Wald und XGBoost
-entstehen unter scikit-learn 1.7.2, und genau dessen Voreinstellungen sind der
+**Getrennte Umgebungen nötig:** TabFM bringt eigene Festlegungen für
+`scikit-learn` und `torch` mit und verschiebt damit die Versionen, unter denen
+Wald und XGBoost gemessen werden — und genau deren Voreinstellungen sind der
 Untersuchungsgegenstand. TabFM darf deshalb **nicht** in derselben Laufzeit
 installiert werden wie ein `rf`- oder `xgb`-Lauf. Das Notebook trennt das; die
 Ergebnisdatei wird nur angehängt, es geht dabei nichts verloren.
+
+Zuletzt hat die TabFM-Installation `scikit-learn` auf 1.6.1 gebracht, also auf
+genau den Stand aus `requirements.txt`. Möglicherweise entfällt der Konflikt
+damit; geprüft ist das nicht, also bleiben die Laufzeiten vorerst getrennt.
 
 **TabFM wählt sein Rechengerät nicht selbst.** `tabfm_v1_0_0.load()` hat
 `device=None` voreingestellt, und das bedeutet laut Quelltext CPU — anders als
@@ -317,6 +321,23 @@ vorhandenen Kerne. Alles andere bleibt auf der Voreinstellung der Bibliothek.
 
 Deshalb stehen `scikit-learn` und `xgboost` in `requirements.txt` mit `==`
 statt `>=`: Die Voreinstellungen *sind* hier der Untersuchungsgegenstand.
+
+Dass das kein theoretisches Risiko ist, zeigt eine Gegenprobe auf S5E3 — ein
+Rechner, ein Python, nur die Bibliotheken getauscht:
+
+| | Random Forest | XGBoost |
+|---|---|---|
+| `skl 1.6.1 / xgb 3.4.1` (gemessen) | 0.87947 | **0.866285** |
+| `skl 1.7.2 / xgb 3.0.5` | 0.87947 | **0.863911** |
+
+Beim Random Forest stimmen alle fünf Fold-Werte einzeln überein, und die
+Voreinstellungen beider Versionen unterscheiden sich in keinem einzigen
+Parameter — dort ist die Version gleichgültig. Bei XGBoost nicht. Gepinnt sind
+deshalb die Versionen, unter denen gemessen wurde.
+
+Nebenbei belegt dieselbe Gegenprobe die Reproduzierbarkeit: Der Colab-Lauf
+(Python 3.13) ließ sich unter Windows mit Python 3.12 Fold für Fold exakt
+nachrechnen.
 
 ### Vorverarbeitung
 
