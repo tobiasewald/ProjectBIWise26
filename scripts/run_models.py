@@ -175,11 +175,22 @@ def modell(name, aufgabe):
         from tabfm import TabFMClassifier, TabFMRegressor
         from tabfm import tabfm_v1_0_0_pytorch as tabfm_v1_0_0
 
+        # TabFM waehlt das Rechengeraet nicht selbst. load() hat
+        # device=None voreingestellt, und das heisst laut Quelltext CPU -
+        # anders als TabPFN, das eine vorhandene CUDA-Karte von sich aus
+        # nimmt. Ohne diese Zeilen laeuft das Modell also auf der CPU,
+        # obendrein in bfloat16, das dort nur nachgebildet wird. Ein
+        # einzelner Datensatz braucht so Minuten statt Sekunden.
+        import torch
+
+        geraet = "cuda" if torch.cuda.is_available() else "cpu"
+
         art = "regression" if aufgabe == "regression" else "classification"
         if art not in _TABFM_GEWICHTE:
-            _TABFM_GEWICHTE[art] = (
-                tabfm_v1_0_0.load(model_type="regression")
-                if art == "regression" else tabfm_v1_0_0.load()
+            print("TabFM laedt Gewichte ({}) auf {} ... ".format(art, geraet),
+                  end="", flush=True)
+            _TABFM_GEWICHTE[art] = tabfm_v1_0_0.load(
+                model_type=art, device=geraet
             )
         bauart = TabFMRegressor if art == "regression" else TabFMClassifier
         return _mit_startwert(bauart, model=_TABFM_GEWICHTE[art])
