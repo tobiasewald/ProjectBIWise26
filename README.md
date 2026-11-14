@@ -190,7 +190,7 @@ nicht vergleichbar und ein Versionsunterschied bei XGBoost würde unbemerkt
 andere Zahlen liefern.
 
 Deshalb hält jede Ergebniszeile in der Spalte `umgebung` fest, wo sie
-entstanden ist (`colab py3.12.10 skl1.7.2 xgb3.0.5`). Gemischte Messungen
+entstanden ist (`colab py3.13.18 skl1.6.1 xgb3.4.1`). Gemischte Messungen
 fallen damit auf, statt still in der Tabelle zu liegen.
 
 Das Notebook holt jeden Datensatz von Kaggle, rechnet ihn und löscht ihn
@@ -213,7 +213,8 @@ gedacht. Solche Läufe gehören nicht in die Ergebnistabelle.
 ### Zwei Varianten
 
 Die Fundamentmodelle lesen ihre Trainingsdaten als Kontext, statt daraus zu
-lernen, und sind darin begrenzt: TabFM liest voreingestellt nur 100 Zeilen.
+lernen. Wie viel Kontext ein Modell verkraftet, unterscheidet sich dabei
+erheblich — und genau deshalb wird gedeckelt.
 Von den 34 geladenen Datensätzen liegt genau einer unter 10.000
 (S5E3 mit 2.190 Zeilen). Daraus folgen zwei Durchläufe:
 
@@ -228,11 +229,19 @@ dieselben Zeilen. Bei 10.000 Zeilen und fünf Folds trainiert ein Modell auf
 8.000 Zeilen.
 
 Der Grund für die Deckelung ist **nicht** eine technische Grenze, sondern die
-Vergleichbarkeit: Alle Modelle sollen dieselbe Datenmenge sehen. TabPFN-3.5
-könnte rein technisch bis zu einer Million Zeilen verarbeiten, TabFM liest
-voreingestellt 100. Ohne Deckelung würde man also messen, wie viel Kontext ein
-Modell zulässt, und nicht, wie gut es damit umgeht. Die 10.000 sind damit eine
-methodische Entscheidung, die in der Arbeit so begründet werden sollte.
+Vergleichbarkeit: Alle Modelle sollen dieselbe Datenmenge sehen. Ohne
+Deckelung bekäme jedes Modell eine andere Menge Kontext, und gemessen würde,
+wie viel ein Modell verkraftet, statt wie gut es damit umgeht. Die 10.000 sind
+damit eine methodische Entscheidung, die in der Arbeit so begründet werden
+sollte.
+
+Die Zahl stammt ursprünglich von TabPFN-2, wo 10.000 Zeilen die fest
+verdrahtete Obergrenze waren (`MAX_NUMBER_OF_SAMPLES=10_000` in
+`inference_config.py`; darüber wirft das Paket einen
+`TabPFNValidationError`). Ab TabPFN-2.5 steht dort 50.000, bei 3.5 liegt der
+Wert im Checkpoint selbst. Technisch bindet die Grenze also nicht mehr — als
+gemeinsame Datenmenge für alle vier Modelle bleibt sie trotzdem eine
+Entscheidung, die getroffen werden muss.
 
 ### Die Fundamentmodelle
 
@@ -241,7 +250,7 @@ methodische Entscheidung, die in der Arbeit so begründet werden sollte.
 | `rf` | Random Forest (scikit-learn) | — | — |
 | `xgb` | XGBoost | — | — |
 | `tabpfn` | [TabPFN](https://github.com/PriorLabs/TabPFN) | TabPFN-3.5 | GPU nötig (auf CPU Grenze bei 5.000 Zeilen) |
-| `tabfm` | [TabFM](https://github.com/google-research/tabfm) (Google Research) | v1.0.0 | 100 Kontextzeilen, 500 Merkmale |
+| `tabfm` | [TabFM](https://github.com/google-research/tabfm) (Google Research) | v1.0.0 | 500 Merkmale; GPU nötig, und das Gerät muss gesetzt werden |
 
 Beide Fundamentmodelle sind scikit-learn-kompatibel und werden erst beim
 Aufruf importiert — ein Lauf mit nur `rf` und `xgb` braucht weder PyTorch noch
@@ -270,29 +279,135 @@ Wer keinen Key hat, kommt mit `--tabpfn-version V2` ohne jede Anmeldung
 durch. TabPFN-2 steht unter der Prior Labs License (Apache 2.0 mit
 Namensnennung); auf CPU gilt dort allerdings schon ab 1.000 Zeilen eine Grenze.
 
-**Getrennte Umgebungen nötig:** TabFM legt seine Abhängigkeiten fest auf
-`scikit-learn==1.6.0` und `torch==2.12.1`. Unsere Zahlen für Wald und XGBoost
-entstehen unter scikit-learn 1.7.2, und genau dessen Voreinstellungen sind der
+**Getrennte Umgebungen nötig:** TabFM bringt eigene Festlegungen für
+`scikit-learn` und `torch` mit und verschiebt damit die Versionen, unter denen
+Wald und XGBoost gemessen werden — und genau deren Voreinstellungen sind der
 Untersuchungsgegenstand. TabFM darf deshalb **nicht** in derselben Laufzeit
 installiert werden wie ein `rf`- oder `xgb`-Lauf. Das Notebook trennt das; die
 Ergebnisdatei wird nur angehängt, es geht dabei nichts verloren.
 
+Zuletzt hat die TabFM-Installation `scikit-learn` auf 1.6.1 gebracht, also auf
+genau den Stand aus `requirements.txt`. Möglicherweise entfällt der Konflikt
+damit; geprüft ist das nicht, also bleiben die Laufzeiten vorerst getrennt.
+
+**TabFM wählt sein Rechengerät nicht selbst.** `tabfm_v1_0_0.load()` hat
+`device=None` voreingestellt, und das bedeutet laut Quelltext CPU — anders als
+TabPFN, das eine vorhandene CUDA-Karte von sich aus nimmt. Zusammen mit
+`dtype=torch.bfloat16`, das auf der CPU nur nachgebildet wird, rechnet ein
+einzelner Datensatz dann minutenlang, während die zugeteilte GPU nichts tut.
+`scripts/run_models.py` setzt das Gerät deshalb selbst und meldet beim Laden,
+worauf gerechnet wird.
+
 **Was „ungetunt" bei einem Fundamentmodell heißt, ist nicht dasselbe wie bei
-einem Wald.** TabFM liest voreingestellt nur **100 Kontextzeilen** und bildet
-über mehrere gezogene Kontexte ein Ensemble. Es sieht damit von Haus aus
-deutlich weniger Daten als Wald und XGBoost auf denselben 8.000 Zeilen. Ob man
-das so stehen lässt — es ist die Voreinstellung, also „ungetunt" im selben
-Sinne — oder `max_num_rows` anhebt, ist eine Entscheidung für die Methodik und
-sollte in der Arbeit begründet werden, nicht stillschweigend fallen.
+einem Wald.** TabFM bildet über mehrere gezogene Kontexte ein Ensemble:
+`n_estimators` steht voreingestellt auf **32**, `max_num_rows` auf **`None`**.
+`None` heißt kein Zuschnitt — jedes der 32 Ensemble-Mitglieder liest die
+vollen 8.000 Trainingszeilen als Kontext. Ungetuntes TabFM sieht also nicht
+weniger Daten als Wald und XGBoost, sondern dieselben, nur 32-mal. Das macht
+den Lauf um ein Vielfaches teurer als TabPFN. Dass `n_estimators` und
+`max_num_rows` trotzdem auf der Voreinstellung bleiben, ist die konsequente
+Lesart von „ungetunt"; ein Eingriff müsste in der Arbeit begründet werden.
+
+> **Vorsicht bei TabFMs eigener README.** Deren FAQ nennt 100 Kontextzeilen
+> als Voreinstellung. Im Quelltext von `TabFMClassifier` und `TabFMRegressor`
+> steht `max_num_rows: Optional[int] = None`, und einen Ersatzwert gibt es an
+> keiner Stelle der Datei. Gemessen wird, was der Code tut.
+
+#### Was TabFM kostet, gemessen
+
+Erster vollständiger Versuch am 14.11.2026 auf einer Colab-T4
+(14,56 GiB, Rechenfähigkeit 7.5), `batch_size=8`. Von 34 Datensätzen ist
+**einer** durchgelaufen:
+
+| | S5E3 |
+|---|---|
+| Zeilen | 2.190 (kleinster Datensatz, unter der Deckelung) |
+| AUC | 0,894161 — zwischen Wald (0,879) und TabPFN (0,897) |
+| Zeit | **729 s** für fünf Folds |
+
+Die übrigen 33 scheiterten an `CUDA out of memory`. Bei 10.000 Zeilen
+verlangte TabFM eine einzelne Zuteilung von **23,84 GiB** — knapp 3 GiB je
+Ensemble-Mitglied, auf einer Karte mit 14,56 GiB.
+
+Beides skaliert quadratisch mit der Kontextgröße, was die zwei Messpunkte
+bestätigen: 2.190 → 10.000 Zeilen ist Faktor 4,57, und 4,57² = 20,9 trifft
+das Verhältnis der Speicherforderungen. Auf dieselbe Rechnung angewendet
+heißt das für die Zeit:
+
+    729 s × 20,9 ≈ 4,2 Stunden je Datensatz
+    33 Datensätze    ≈ 5 bis 6 Tage
+
+Das ist eine Hochrechnung aus **einer** Messung, nicht eine Messung — aber
+auch bei linearer statt quadratischer Skalierung bleiben rund 30 Stunden. Auf
+dieser Karte ist der Lauf nicht machbar.
+
+**Ein Teil davon ist die Karte, nicht das Modell.** TabFM lädt seine Gewichte
+in `bfloat16`. bfloat16-Tensorkerne gibt es erst ab Rechenfähigkeit 8.0
+(Ampere: A100, L4, G4). Eine T4 ist 7.5 und hat Tensorkerne nur für
+`float16`; PyTorch rechnet `bfloat16` dort trotzdem, nur ohne diese Kerne und
+ohne Warnung. `torch.cuda.is_bf16_supported()` taugt nicht als Prüfung — der
+belastbare Test ist `torch.cuda.get_device_capability()[0] >= 8`. Genau den
+macht `run_models.py` jetzt beim Start und sagt es, wenn die Karte nicht
+passt. Wie viel die fehlenden Kerne wirklich ausmachen, ist hier nicht
+gemessen; es ist der erste Punkt, der auf einer Ampere-Karte zu prüfen ist.
 
 ### Was „ungetunt“ heißt
 
-Gesetzt werden nur `random_state` und `n_jobs`. Beides sind keine
-Hyperparameter — das eine macht den Lauf wiederholbar, das andere nutzt die
-vorhandenen Kerne. Alles andere bleibt auf der Voreinstellung der Bibliothek.
+Gesetzt werden nur `random_state`, `n_jobs` und — bei TabFM — `device` und
+`batch_size`. Nichts davon ist ein Hyperparameter:
+
+| Parameter | Zweck |
+|---|---|
+| `random_state` | macht den Lauf wiederholbar |
+| `n_jobs` | nutzt die vorhandenen Kerne |
+| `device` | legt TabFM auf die GPU, die es sonst nicht findet |
+| `batch_size` | bündelt TabFMs Ensemble-Mitglieder je Durchgang |
+
+Alles andere bleibt auf der Voreinstellung der Bibliothek.
+
+`batch_size` verdient eine Erklärung, weil es nach einer Stellschraube
+aussieht. TabFMs Voreinstellung ist **1**: Die 32 Ensemble-Mitglieder gehen
+einzeln durch das Modell, laut Doku „Number of ensemble members to forward
+through the model at once". Auf einer GPU sind das 32 winzige Aufrufe statt
+eines großen, und die Karte wartet die meiste Zeit. Gerechnet wird in beiden
+Fällen dasselbe, nur anders gebündelt — die Vorhersagen ändern sich nicht.
+Dieselbe Art Entscheidung wie `n_jobs=-1` beim Wald. Umstellbar über
+`--tabfm-batch`.
+
+Bei „CUDA out of memory" halbiert die Hauptschleife den Wert für diesen
+einen Datensatz und versucht es erneut, bis hinunter zu 1; welcher Wert es am
+Ende war, steht in `modell_version` (`tabfm v1.0.0 batch4`). Das darf die
+Schleife selbst entscheiden, weil sich am Ergebnis nichts ändert — und es
+ist nötig, weil der Speicherbedarf vom Datensatz abhängt und alle
+Datensätze in einem Lauf stehen.
+
+Außerdem wird nach jedem Fehlschlag `torch.cuda.empty_cache()` gerufen.
+PyTorch behält freigegebene Blöcke in einem eigenen Vorrat, statt sie dem
+Treiber zurückzugeben; nach einem missglungenen Versuch über mehrere Gigabyte
+ist dieser Vorrat zerstückelt, und der nächste Datensatz findet nicht einmal
+mehr ein halbes Gigabyte am Stück. Im Lauf vom 14.11.2026 hat genau das
+28 der 33 Fehlschläge verursacht: Sie scheiterten an **626 MiB** auf einer
+Karte, auf der nach dem ersten Fehler nur noch 43 MiB am Stück frei waren.
 
 Deshalb stehen `scikit-learn` und `xgboost` in `requirements.txt` mit `==`
 statt `>=`: Die Voreinstellungen *sind* hier der Untersuchungsgegenstand.
+
+Dass das kein theoretisches Risiko ist, zeigt eine Gegenprobe auf S5E3 — ein
+Rechner, ein Python, nur die Bibliotheken getauscht:
+
+| | Random Forest | XGBoost |
+|---|---|---|
+| `skl 1.6.1 / xgb 3.4.1` (gemessen) | 0.87947 | **0.866285** |
+| `skl 1.7.2 / xgb 3.0.5` | 0.87947 | **0.863911** |
+
+Beim Random Forest stimmen alle fünf Fold-Werte einzeln überein, und die
+Voreinstellungen beider Versionen unterscheiden sich in keinem einzigen
+Parameter — dort ist die Version gleichgültig. Bei XGBoost nicht. Gepinnt sind
+deshalb die Versionen, unter denen gemessen wurde.
+
+Nebenbei belegt dieselbe Gegenprobe die Reproduzierbarkeit: Der Colab-Lauf
+(Python 3.13) ließ sich unter Windows mit Python 3.12 Fold für Fold exakt
+nachrechnen.
 
 ### Vorverarbeitung
 

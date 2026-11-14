@@ -9,18 +9,36 @@ seaborn>=0.13.2
 
 # Die Modelle sind exakt festgenagelt, nicht mit >=. Grund: Bei Forschungs-
 # frage 1 sind die Voreinstellungen dieser beiden Bibliotheken der
-# Untersuchungsgegenstand. XGBoost hat sie zwischen 2.x und 3.x geaendert,
-# mit einer anderen Version kommen also andere Zahlen heraus und die
-# Messungen von zwei Rechnern sind nicht mehr vergleichbar.
-scikit-learn==1.7.2
-xgboost==3.0.5
+# Untersuchungsgegenstand. Mit einer anderen Version kommen andere Zahlen
+# heraus und die Messungen von zwei Rechnern sind nicht mehr vergleichbar.
+#
+# Es sind genau die Versionen, unter denen die Messungen entstanden sind.
+# Nachgeprueft auf zwei Rechnern (Colab mit Python 3.13, Windows mit 3.12),
+# Datensatz S5E3, fuenf Folds:
+#
+#   Random Forest   identisch unter 1.6.1 und 1.7.2, bis zur letzten Stelle
+#                   und in jedem einzelnen Fold. Die Voreinstellungen der
+#                   beiden Versionen unterscheiden sich in keinem Parameter.
+#   XGBoost         AUC 0.866285 unter 3.4.1, 0.863911 unter 3.0.5. Die
+#                   Voreinstellungen unterscheiden sich nur in
+#                   enable_categorical, und das bleibt hier wirkungslos, weil
+#                   der ColumnTransformer ein numpy-Array liefert. Der
+#                   Unterschied steckt also im Algorithmus selbst.
+#
+# Wer diese Zahlen aendert, macht die vorhandenen xgb-Messungen ungueltig.
+scikit-learn==1.6.1
+xgboost==3.4.1
 
 
 # Fuer die Auswertung der Raenge (Friedman, Nemenyi, CD-Diagramm)
 matplotlib>=3.8
 
 # Die Fundamentmodelle stehen bewusst NICHT hier. TabPFN laedt PyTorch und
-# Modellgewichte nach, TabFM wird aus dem Git-Repository installiert und legt
-# scikit-learn auf 1.6.0 fest - das wuerde die Zahlen von rf und xgb
-# veraendern. Beide werden im Colab-Notebook in eigenen Laufzeiten
-# installiert, siehe notebooks/colab_run_models.ipynb.
+# Modellgewichte nach, TabFM wird aus dem Git-Repository installiert und
+# bringt eigene Festlegungen fuer scikit-learn und torch mit. Beide werden im
+# Colab-Notebook in eigenen Laufzeiten installiert, siehe
+# notebooks/colab_run_models.ipynb.
+#
+# Die TabFM-Installation hat scikit-learn zuletzt auf 1.6.1 gebracht, also auf
+# genau den Stand, der oben steht. Ob der Konflikt damit ganz verschwindet,
+# ist noch nicht geprueft - bis dahin bleiben die Laufzeiten getrennt.

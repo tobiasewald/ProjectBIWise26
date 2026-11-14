@@ -16,7 +16,8 @@ Zwei Varianten:
 Die Deckelung ist keine technische Grenze, sondern eine methodische
 Entscheidung: Alle Modelle sollen dieselbe Datenmenge sehen. Die
 Fundamentmodelle lesen ihre Trainingsdaten als Kontext statt daraus zu
-lernen und sind darin begrenzt - TabFM etwa voreingestellt bei 100 Zeilen.
+lernen; ohne Deckelung wuerde man messen, wie viel Kontext ein Modell
+verkraftet, und nicht, wie gut es damit umgeht.
 
 Die Vorverarbeitung ist fuer alle Modelle gleich (Median fuer Zahlen,
 Ordinalkodierung fuer Text) und wird je Fold nur auf den Trainingsdaten
@@ -34,10 +35,12 @@ laufenden Datensatz.
 
 import argparse
 import csv
+import gc
 import os
 import platform
 import re
 import shutil
+import sys
 import time
 from datetime import datetime
 from pathlib import Path
@@ -96,6 +99,30 @@ TABPFN_VERSION = "V3_5"
 # passieren, deshalb einmal pro Aufgabenart hier merken.
 _TABFM_GEWICHTE = {}
 
+# Wie viele der 32 Ensemble-Mitglieder gleichzeitig durch das Modell gehen.
+# Laut TabFM-Doku:
+#
+#   batch_size: Number of ensemble members to forward through the model at
+#               once. None or 0 means all at once.
+#
+# Voreingestellt ist 1, also eines nach dem anderen. Auf einer GPU heisst das
+# 32 winzige Aufrufe statt eines grossen, und die Karte wartet die meiste Zeit
+# auf den naechsten Start. Das ist kein Hyperparameter, sondern dieselbe Art
+# Stellschraube wie n_jobs=-1 beim Wald: Gerechnet wird dasselbe, nur anders
+# gebuendelt. Die Vorhersagen aendern sich davon nicht.
+#
+# Hoeher ist schneller, braucht aber mehr Grafikspeicher. Bei
+# "CUDA out of memory" mit --tabfm-batch kleiner stellen; die Fehlerzeilen
+# gelten nicht als fertig, der naechste Lauf holt die Datensaetze nach.
+TABFM_BATCH = 8
+
+# Der Wert, mit dem gerade gerechnet wird. Bei "out of memory" halbiert die
+# Hauptschleife ihn fuer diesen einen Datensatz und versucht es nochmal, statt
+# ihn aufzugeben - ein Datensatz mit 10.000 Zeilen braucht mehr Speicher je
+# Mitglied als einer mit 2.000, und beide stehen in derselben Liste. Welcher
+# Wert es am Ende war, steht in modell_version in der Ergebniszeile.
+_TABFM_BATCH_JETZT = TABFM_BATCH
+
 
 def _mit_startwert(bauart, **kwargs):
     """Setzt random_state, wenn das Modell den Parameter kennt.
@@ -119,7 +146,9 @@ def modell_version(name):
         import tabpfn
         return "tabpfn {} {}".format(getattr(tabpfn, "__version__", "?"), TABPFN_VERSION)
     if name == "tabfm":
-        return "tabfm v1.0.0"
+        # Die Buendelgroesse steht mit dabei, damit nachvollziehbar ist, womit
+        # gerechnet wurde - sie aendert das Ergebnis nicht, wohl aber die Zeit.
+        return "tabfm v1.0.0 batch{}".format(_TABFM_BATCH_JETZT)
     return ""
 
 
@@ -175,14 +204,27 @@ def modell(name, aufgabe):
         from tabfm import TabFMClassifier, TabFMRegressor
         from tabfm import tabfm_v1_0_0_pytorch as tabfm_v1_0_0
 
+        # TabFM waehlt das Rechengeraet nicht selbst. load() hat
+        # device=None voreingestellt, und das heisst laut Quelltext CPU -
+        # anders als TabPFN, das eine vorhandene CUDA-Karte von sich aus
+        # nimmt. Ohne diese Zeilen laeuft das Modell also auf der CPU,
+        # obendrein in bfloat16, das dort nur nachgebildet wird. Ein
+        # einzelner Datensatz braucht so Minuten statt Sekunden.
+        import torch
+
+        geraet = "cuda" if torch.cuda.is_available() else "cpu"
+
         art = "regression" if aufgabe == "regression" else "classification"
         if art not in _TABFM_GEWICHTE:
-            _TABFM_GEWICHTE[art] = (
-                tabfm_v1_0_0.load(model_type="regression")
-                if art == "regression" else tabfm_v1_0_0.load()
+            print("TabFM laedt Gewichte ({}) auf {} ... ".format(art, geraet),
+                  end="", flush=True)
+            _TABFM_GEWICHTE[art] = tabfm_v1_0_0.load(
+                model_type=art, device=geraet
             )
         bauart = TabFMRegressor if art == "regression" else TabFMClassifier
-        return _mit_startwert(bauart, model=_TABFM_GEWICHTE[art])
+        return _mit_startwert(
+            bauart, model=_TABFM_GEWICHTE[art], batch_size=_TABFM_BATCH_JETZT
+        )
 
     raise ValueError("Unbekanntes Modell " + repr(name))
 
@@ -410,8 +452,117 @@ def hole_daten(slug):
     return sekunden, megabytes
 
 
+def _version_ruhig(name):
+    """modell_version, aber ohne eigene Ausnahme.
+
+    Wird in der Fehlerzeile gebraucht: auch ein Fehlschlag soll festhalten,
+    mit welchem Gewichtsstand und welcher Buendelgroesse er passiert ist. Wenn
+    schon der Import des Modells der Fehler war, bleibt das Feld eben leer -
+    daran soll die Fehlerzeile nicht noch einmal scheitern.
+    """
+    try:
+        return modell_version(name)
+    except Exception:
+        return ""
+
+
+def gpu_bericht(modelle):
+    """Was fuer eine Karte das ist, einmal am Anfang.
+
+    Steht hier, weil die Laufzeit der Fundamentmodelle voellig davon abhaengt
+    und man es hinterher am Protokoll nicht mehr sieht. Wichtig ist die
+    Rechenfaehigkeit: TabFM laedt seine Gewichte in bfloat16, und
+    bfloat16-Tensorkerne gibt es erst ab Rechenfaehigkeit 8.0 (Ampere, also
+    A100, L4, G4). Eine T4 ist 7.5 und hat Tensorkerne nur fuer float16; auf
+    ihr rechnet PyTorch bfloat16, aber ohne diese Kerne. Es laeuft also, nur
+    sehr viel langsamer, und keine Warnung sagt das.
+    """
+    if not any(m in modelle for m in ("tabpfn", "tabfm")):
+        return
+    try:
+        import torch
+    except ImportError:
+        print("torch ist nicht installiert.")
+        return
+    if not torch.cuda.is_available():
+        print("Keine CUDA-Karte sichtbar - die Fundamentmodelle rechnen auf der CPU.")
+        return
+    name = torch.cuda.get_device_name(0)
+    haupt, neben = torch.cuda.get_device_capability(0)
+    gib = torch.cuda.get_device_properties(0).total_memory / 1024 ** 3
+    print("GPU: {} | Rechenfaehigkeit {}.{} | {:.1f} GiB".format(name, haupt, neben, gib))
+    if haupt < 8:
+        print("  Achtung: Diese Karte hat keine bfloat16-Tensorkerne (erst ab 8.0).")
+        print("  TabFM rechnet trotzdem, aber um ein Vielfaches langsamer.")
+
+
+def _ist_speichermangel(exc):
+    """Ob die Ausnahme ein vollgelaufener Grafikspeicher ist.
+
+    Ohne torch zu importieren, damit ein Lauf mit nur rf und xgb das hier
+    gefahrlos durchlaeuft.
+    """
+    return (type(exc).__name__ == "OutOfMemoryError"
+            or "out of memory" in str(exc).lower())
+
+
+def gpu_speicher_freigeben():
+    """Belegten Grafikspeicher zurueckgeben.
+
+    Notwendig nach einem Fehlschlag. PyTorch behaelt freigegebene Bloecke in
+    einem eigenen Vorrat, statt sie dem Treiber zurueckzugeben. Nach einem
+    missglueckten Versuch ueber mehrere Gigabyte ist dieser Vorrat zwar frei,
+    aber zerstueckelt - der naechste Datensatz findet dann nicht einmal mehr
+    ein halbes Gigabyte am Stueck und scheitert ebenfalls. Ohne diese Zeilen
+    reisst ein einziger Fehlschlag alle folgenden Datensaetze mit.
+    """
+    torch = sys.modules.get("torch")
+    gc.collect()
+    if torch is not None and torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
+def rechne_mit_rueckfall(slug, name, variante, zeile, metrik_text):
+    """rechne(), aber mit Rueckfall auf kleinere Buendel bei Speichermangel.
+
+    Der Speicherbedarf von TabFM waechst quadratisch mit der Kontextgroesse:
+    Bei 2.000 Zeilen passen acht Ensemble-Mitglieder gleichzeitig auf die
+    Karte, bei 10.000 nicht mehr. Beide Datensaetze stehen in derselben
+    Liste, also kann eine feste Buendelgroesse nicht fuer alle stimmen. Statt
+    den Datensatz aufzugeben, wird der Wert halbiert und es nochmal versucht,
+    bis hinunter zu eins.
+
+    Das darf diese Funktion selbst entscheiden, weil sich am Ergebnis nichts
+    aendert - nur an der Zeit. Womit es am Ende geklappt hat, steht in
+    modell_version in der Ergebniszeile.
+    """
+    global _TABFM_BATCH_JETZT
+
+    _TABFM_BATCH_JETZT = TABFM_BATCH
+    while True:
+        try:
+            return rechne(slug, name, variante, zeile, metrik_text)
+        except Exception as exc:
+            knapp = _ist_speichermangel(exc)
+            # Vor dem naechsten Versuch raeumen, sonst ist der Vorrat
+            # zerstueckelt und auch das halbe Buendel findet keinen Platz.
+            gpu_speicher_freigeben()
+            if knapp and name == "tabfm" and _TABFM_BATCH_JETZT > 1:
+                _TABFM_BATCH_JETZT = max(1, _TABFM_BATCH_JETZT // 2)
+                print("Speicher knapp, nochmal mit batch{} ... ".format(
+                    _TABFM_BATCH_JETZT), end="", flush=True)
+                continue
+            return {
+                "slug": slug, "modell": name, "variante": variante,
+                "status": "fehler",
+                "hinweis": type(exc).__name__ + ": " + str(exc)[:200],
+                "umgebung": umgebung(), "modell_version": _version_ruhig(name),
+                "zeitpunkt": datetime.now().isoformat(timespec="seconds"),
+            }
+
+
 def main():
-    global DATA_DIR, OUT_FILE, TABPFN_VERSION
+    global DATA_DIR, OUT_FILE, TABPFN_VERSION, TABFM_BATCH, _TABFM_BATCH_JETZT
 
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -428,9 +579,13 @@ def main():
                         help="Datensatz nach der Rechnung wieder entfernen, spart Platte")
     parser.add_argument("--tabpfn-version", default=TABPFN_VERSION,
                         help="Gewichtsstand von TabPFN, z. B. V2 oder V3_5")
+    parser.add_argument("--tabfm-batch", type=int, default=TABFM_BATCH,
+                        help="Ensemble-Mitglieder je Durchgang bei TabFM; kleiner bei zu wenig Grafikspeicher")
     args = parser.parse_args()
 
     TABPFN_VERSION = args.tabpfn_version
+    TABFM_BATCH = args.tabfm_batch
+    _TABFM_BATCH_JETZT = TABFM_BATCH
     if args.daten:
         DATA_DIR = Path(args.daten)
     if args.ausgabe:
@@ -452,6 +607,8 @@ def main():
     # Klein nach gross, damit bei einem Abbruch schon Ergebnisse da sind.
     slugs.sort(key=lambda s: int(features[s]["n_zeilen"]))
 
+    gpu_bericht(args.modelle)
+
     aufgaben = [(s, m) for s in slugs for m in args.modelle]
     for i, (slug, name) in enumerate(aufgaben, 1):
         kopf = "[{}/{}] {} {} {}".format(i, len(aufgaben), slug, name, args.variante)
@@ -470,15 +627,9 @@ def main():
                 continue
         else:
             print(kopf + " ... ", end="", flush=True)
-        try:
-            row = rechne(slug, name, args.variante, features[slug], overview[slug])
-        except Exception as exc:
-            row = {
-                "slug": slug, "modell": name, "variante": args.variante,
-                "status": "fehler", "hinweis": type(exc).__name__ + ": " + str(exc)[:200],
-                "umgebung": umgebung(),
-                "zeitpunkt": datetime.now().isoformat(timespec="seconds"),
-            }
+        row = rechne_mit_rueckfall(
+            slug, name, args.variante, features[slug], overview[slug]
+        )
         append_row(row)
 
         if row["status"] == "ok":
