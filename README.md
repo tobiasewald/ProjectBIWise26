@@ -213,7 +213,8 @@ gedacht. Solche Läufe gehören nicht in die Ergebnistabelle.
 ### Zwei Varianten
 
 Die Fundamentmodelle lesen ihre Trainingsdaten als Kontext, statt daraus zu
-lernen, und sind darin begrenzt: TabFM liest voreingestellt nur 100 Zeilen.
+lernen. Wie viel Kontext ein Modell verkraftet, unterscheidet sich dabei
+erheblich — und genau deshalb wird gedeckelt.
 Von den 34 geladenen Datensätzen liegt genau einer unter 10.000
 (S5E3 mit 2.190 Zeilen). Daraus folgen zwei Durchläufe:
 
@@ -228,11 +229,19 @@ dieselben Zeilen. Bei 10.000 Zeilen und fünf Folds trainiert ein Modell auf
 8.000 Zeilen.
 
 Der Grund für die Deckelung ist **nicht** eine technische Grenze, sondern die
-Vergleichbarkeit: Alle Modelle sollen dieselbe Datenmenge sehen. TabPFN-3.5
-könnte rein technisch bis zu einer Million Zeilen verarbeiten, TabFM liest
-voreingestellt 100. Ohne Deckelung würde man also messen, wie viel Kontext ein
-Modell zulässt, und nicht, wie gut es damit umgeht. Die 10.000 sind damit eine
-methodische Entscheidung, die in der Arbeit so begründet werden sollte.
+Vergleichbarkeit: Alle Modelle sollen dieselbe Datenmenge sehen. Ohne
+Deckelung bekäme jedes Modell eine andere Menge Kontext, und gemessen würde,
+wie viel ein Modell verkraftet, statt wie gut es damit umgeht. Die 10.000 sind
+damit eine methodische Entscheidung, die in der Arbeit so begründet werden
+sollte.
+
+Die Zahl stammt ursprünglich von TabPFN-2, wo 10.000 Zeilen die fest
+verdrahtete Obergrenze waren (`MAX_NUMBER_OF_SAMPLES=10_000` in
+`inference_config.py`; darüber wirft das Paket einen
+`TabPFNValidationError`). Ab TabPFN-2.5 steht dort 50.000, bei 3.5 liegt der
+Wert im Checkpoint selbst. Technisch bindet die Grenze also nicht mehr — als
+gemeinsame Datenmenge für alle vier Modelle bleibt sie trotzdem eine
+Entscheidung, die getroffen werden muss.
 
 ### Die Fundamentmodelle
 
@@ -241,7 +250,7 @@ methodische Entscheidung, die in der Arbeit so begründet werden sollte.
 | `rf` | Random Forest (scikit-learn) | — | — |
 | `xgb` | XGBoost | — | — |
 | `tabpfn` | [TabPFN](https://github.com/PriorLabs/TabPFN) | TabPFN-3.5 | GPU nötig (auf CPU Grenze bei 5.000 Zeilen) |
-| `tabfm` | [TabFM](https://github.com/google-research/tabfm) (Google Research) | v1.0.0 | 100 Kontextzeilen, 500 Merkmale |
+| `tabfm` | [TabFM](https://github.com/google-research/tabfm) (Google Research) | v1.0.0 | 500 Merkmale; GPU nötig, und das Gerät muss gesetzt werden |
 
 Beide Fundamentmodelle sind scikit-learn-kompatibel und werden erst beim
 Aufruf importiert — ein Lauf mit nur `rf` und `xgb` braucht weder PyTorch noch
@@ -277,13 +286,28 @@ Untersuchungsgegenstand. TabFM darf deshalb **nicht** in derselben Laufzeit
 installiert werden wie ein `rf`- oder `xgb`-Lauf. Das Notebook trennt das; die
 Ergebnisdatei wird nur angehängt, es geht dabei nichts verloren.
 
+**TabFM wählt sein Rechengerät nicht selbst.** `tabfm_v1_0_0.load()` hat
+`device=None` voreingestellt, und das bedeutet laut Quelltext CPU — anders als
+TabPFN, das eine vorhandene CUDA-Karte von sich aus nimmt. Zusammen mit
+`dtype=torch.bfloat16`, das auf der CPU nur nachgebildet wird, rechnet ein
+einzelner Datensatz dann minutenlang, während die zugeteilte GPU nichts tut.
+`scripts/run_models.py` setzt das Gerät deshalb selbst und meldet beim Laden,
+worauf gerechnet wird.
+
 **Was „ungetunt" bei einem Fundamentmodell heißt, ist nicht dasselbe wie bei
-einem Wald.** TabFM liest voreingestellt nur **100 Kontextzeilen** und bildet
-über mehrere gezogene Kontexte ein Ensemble. Es sieht damit von Haus aus
-deutlich weniger Daten als Wald und XGBoost auf denselben 8.000 Zeilen. Ob man
-das so stehen lässt — es ist die Voreinstellung, also „ungetunt" im selben
-Sinne — oder `max_num_rows` anhebt, ist eine Entscheidung für die Methodik und
-sollte in der Arbeit begründet werden, nicht stillschweigend fallen.
+einem Wald.** TabFM bildet über mehrere gezogene Kontexte ein Ensemble:
+`n_estimators` steht voreingestellt auf **32**, `max_num_rows` auf **`None`**.
+`None` heißt kein Zuschnitt — jedes der 32 Ensemble-Mitglieder liest die
+vollen 8.000 Trainingszeilen als Kontext. Ungetuntes TabFM sieht also nicht
+weniger Daten als Wald und XGBoost, sondern dieselben, nur 32-mal. Das macht
+den Lauf um ein Vielfaches teurer als TabPFN. Dass `n_estimators` und
+`max_num_rows` trotzdem auf der Voreinstellung bleiben, ist die konsequente
+Lesart von „ungetunt"; ein Eingriff müsste in der Arbeit begründet werden.
+
+> **Vorsicht bei TabFMs eigener README.** Deren FAQ nennt 100 Kontextzeilen
+> als Voreinstellung. Im Quelltext von `TabFMClassifier` und `TabFMRegressor`
+> steht `max_num_rows: Optional[int] = None`, und einen Ersatzwert gibt es an
+> keiner Stelle der Datei. Gemessen wird, was der Code tut.
 
 ### Was „ungetunt“ heißt
 

@@ -16,7 +16,8 @@ Zwei Varianten:
 Die Deckelung ist keine technische Grenze, sondern eine methodische
 Entscheidung: Alle Modelle sollen dieselbe Datenmenge sehen. Die
 Fundamentmodelle lesen ihre Trainingsdaten als Kontext statt daraus zu
-lernen und sind darin begrenzt - TabFM etwa voreingestellt bei 100 Zeilen.
+lernen; ohne Deckelung wuerde man messen, wie viel Kontext ein Modell
+verkraftet, und nicht, wie gut es damit umgeht.
 
 Die Vorverarbeitung ist fuer alle Modelle gleich (Median fuer Zahlen,
 Ordinalkodierung fuer Text) und wird je Fold nur auf den Trainingsdaten
