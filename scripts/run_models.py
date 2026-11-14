@@ -97,6 +97,23 @@ TABPFN_VERSION = "V3_5"
 # passieren, deshalb einmal pro Aufgabenart hier merken.
 _TABFM_GEWICHTE = {}
 
+# Wie viele der 32 Ensemble-Mitglieder gleichzeitig durch das Modell gehen.
+# Laut TabFM-Doku:
+#
+#   batch_size: Number of ensemble members to forward through the model at
+#               once. None or 0 means all at once.
+#
+# Voreingestellt ist 1, also eines nach dem anderen. Auf einer GPU heisst das
+# 32 winzige Aufrufe statt eines grossen, und die Karte wartet die meiste Zeit
+# auf den naechsten Start. Das ist kein Hyperparameter, sondern dieselbe Art
+# Stellschraube wie n_jobs=-1 beim Wald: Gerechnet wird dasselbe, nur anders
+# gebuendelt. Die Vorhersagen aendern sich davon nicht.
+#
+# Hoeher ist schneller, braucht aber mehr Grafikspeicher. Bei
+# "CUDA out of memory" mit --tabfm-batch kleiner stellen; die Fehlerzeilen
+# gelten nicht als fertig, der naechste Lauf holt die Datensaetze nach.
+TABFM_BATCH = 8
+
 
 def _mit_startwert(bauart, **kwargs):
     """Setzt random_state, wenn das Modell den Parameter kennt.
@@ -120,7 +137,9 @@ def modell_version(name):
         import tabpfn
         return "tabpfn {} {}".format(getattr(tabpfn, "__version__", "?"), TABPFN_VERSION)
     if name == "tabfm":
-        return "tabfm v1.0.0"
+        # Die Buendelgroesse steht mit dabei, damit nachvollziehbar ist, womit
+        # gerechnet wurde - sie aendert das Ergebnis nicht, wohl aber die Zeit.
+        return "tabfm v1.0.0 batch{}".format(TABFM_BATCH)
     return ""
 
 
@@ -194,7 +213,9 @@ def modell(name, aufgabe):
                 model_type=art, device=geraet
             )
         bauart = TabFMRegressor if art == "regression" else TabFMClassifier
-        return _mit_startwert(bauart, model=_TABFM_GEWICHTE[art])
+        return _mit_startwert(
+            bauart, model=_TABFM_GEWICHTE[art], batch_size=TABFM_BATCH
+        )
 
     raise ValueError("Unbekanntes Modell " + repr(name))
 
@@ -423,7 +444,7 @@ def hole_daten(slug):
 
 
 def main():
-    global DATA_DIR, OUT_FILE, TABPFN_VERSION
+    global DATA_DIR, OUT_FILE, TABPFN_VERSION, TABFM_BATCH
 
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -440,9 +461,12 @@ def main():
                         help="Datensatz nach der Rechnung wieder entfernen, spart Platte")
     parser.add_argument("--tabpfn-version", default=TABPFN_VERSION,
                         help="Gewichtsstand von TabPFN, z. B. V2 oder V3_5")
+    parser.add_argument("--tabfm-batch", type=int, default=TABFM_BATCH,
+                        help="Ensemble-Mitglieder je Durchgang bei TabFM; kleiner bei zu wenig Grafikspeicher")
     args = parser.parse_args()
 
     TABPFN_VERSION = args.tabpfn_version
+    TABFM_BATCH = args.tabfm_batch
     if args.daten:
         DATA_DIR = Path(args.daten)
     if args.ausgabe:

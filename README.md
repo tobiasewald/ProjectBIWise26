@@ -315,9 +315,26 @@ Lesart von „ungetunt"; ein Eingriff müsste in der Arbeit begründet werden.
 
 ### Was „ungetunt“ heißt
 
-Gesetzt werden nur `random_state` und `n_jobs`. Beides sind keine
-Hyperparameter — das eine macht den Lauf wiederholbar, das andere nutzt die
-vorhandenen Kerne. Alles andere bleibt auf der Voreinstellung der Bibliothek.
+Gesetzt werden nur `random_state`, `n_jobs` und — bei TabFM — `device` und
+`batch_size`. Nichts davon ist ein Hyperparameter:
+
+| Parameter | Zweck |
+|---|---|
+| `random_state` | macht den Lauf wiederholbar |
+| `n_jobs` | nutzt die vorhandenen Kerne |
+| `device` | legt TabFM auf die GPU, die es sonst nicht findet |
+| `batch_size` | bündelt TabFMs Ensemble-Mitglieder je Durchgang |
+
+Alles andere bleibt auf der Voreinstellung der Bibliothek.
+
+`batch_size` verdient eine Erklärung, weil es nach einer Stellschraube
+aussieht. TabFMs Voreinstellung ist **1**: Die 32 Ensemble-Mitglieder gehen
+einzeln durch das Modell, laut Doku „Number of ensemble members to forward
+through the model at once". Auf einer GPU sind das 32 winzige Aufrufe statt
+eines großen, und die Karte wartet die meiste Zeit. Gerechnet wird in beiden
+Fällen dasselbe, nur anders gebündelt — die Vorhersagen ändern sich nicht.
+Dieselbe Art Entscheidung wie `n_jobs=-1` beim Wald. Umstellbar über
+`--tabfm-batch`; bei „CUDA out of memory" kleiner wählen.
 
 Deshalb stehen `scikit-learn` und `xgboost` in `requirements.txt` mit `==`
 statt `>=`: Die Voreinstellungen *sind* hier der Untersuchungsgegenstand.
