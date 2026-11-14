@@ -313,6 +313,44 @@ Lesart von „ungetunt"; ein Eingriff müsste in der Arbeit begründet werden.
 > steht `max_num_rows: Optional[int] = None`, und einen Ersatzwert gibt es an
 > keiner Stelle der Datei. Gemessen wird, was der Code tut.
 
+#### Was TabFM kostet, gemessen
+
+Erster vollständiger Versuch am 14.11.2026 auf einer Colab-T4
+(14,56 GiB, Rechenfähigkeit 7.5), `batch_size=8`. Von 34 Datensätzen ist
+**einer** durchgelaufen:
+
+| | S5E3 |
+|---|---|
+| Zeilen | 2.190 (kleinster Datensatz, unter der Deckelung) |
+| AUC | 0,894161 — zwischen Wald (0,879) und TabPFN (0,897) |
+| Zeit | **729 s** für fünf Folds |
+
+Die übrigen 33 scheiterten an `CUDA out of memory`. Bei 10.000 Zeilen
+verlangte TabFM eine einzelne Zuteilung von **23,84 GiB** — knapp 3 GiB je
+Ensemble-Mitglied, auf einer Karte mit 14,56 GiB.
+
+Beides skaliert quadratisch mit der Kontextgröße, was die zwei Messpunkte
+bestätigen: 2.190 → 10.000 Zeilen ist Faktor 4,57, und 4,57² = 20,9 trifft
+das Verhältnis der Speicherforderungen. Auf dieselbe Rechnung angewendet
+heißt das für die Zeit:
+
+    729 s × 20,9 ≈ 4,2 Stunden je Datensatz
+    33 Datensätze    ≈ 5 bis 6 Tage
+
+Das ist eine Hochrechnung aus **einer** Messung, nicht eine Messung — aber
+auch bei linearer statt quadratischer Skalierung bleiben rund 30 Stunden. Auf
+dieser Karte ist der Lauf nicht machbar.
+
+**Ein Teil davon ist die Karte, nicht das Modell.** TabFM lädt seine Gewichte
+in `bfloat16`. bfloat16-Tensorkerne gibt es erst ab Rechenfähigkeit 8.0
+(Ampere: A100, L4, G4). Eine T4 ist 7.5 und hat Tensorkerne nur für
+`float16`; PyTorch rechnet `bfloat16` dort trotzdem, nur ohne diese Kerne und
+ohne Warnung. `torch.cuda.is_bf16_supported()` taugt nicht als Prüfung — der
+belastbare Test ist `torch.cuda.get_device_capability()[0] >= 8`. Genau den
+macht `run_models.py` jetzt beim Start und sagt es, wenn die Karte nicht
+passt. Wie viel die fehlenden Kerne wirklich ausmachen, ist hier nicht
+gemessen; es ist der erste Punkt, der auf einer Ampere-Karte zu prüfen ist.
+
 ### Was „ungetunt“ heißt
 
 Gesetzt werden nur `random_state`, `n_jobs` und — bei TabFM — `device` und
@@ -334,7 +372,22 @@ through the model at once". Auf einer GPU sind das 32 winzige Aufrufe statt
 eines großen, und die Karte wartet die meiste Zeit. Gerechnet wird in beiden
 Fällen dasselbe, nur anders gebündelt — die Vorhersagen ändern sich nicht.
 Dieselbe Art Entscheidung wie `n_jobs=-1` beim Wald. Umstellbar über
-`--tabfm-batch`; bei „CUDA out of memory" kleiner wählen.
+`--tabfm-batch`.
+
+Bei „CUDA out of memory" halbiert die Hauptschleife den Wert für diesen
+einen Datensatz und versucht es erneut, bis hinunter zu 1; welcher Wert es am
+Ende war, steht in `modell_version` (`tabfm v1.0.0 batch4`). Das darf die
+Schleife selbst entscheiden, weil sich am Ergebnis nichts ändert — und es
+ist nötig, weil der Speicherbedarf vom Datensatz abhängt und alle
+Datensätze in einem Lauf stehen.
+
+Außerdem wird nach jedem Fehlschlag `torch.cuda.empty_cache()` gerufen.
+PyTorch behält freigegebene Blöcke in einem eigenen Vorrat, statt sie dem
+Treiber zurückzugeben; nach einem missglungenen Versuch über mehrere Gigabyte
+ist dieser Vorrat zerstückelt, und der nächste Datensatz findet nicht einmal
+mehr ein halbes Gigabyte am Stück. Im Lauf vom 14.11.2026 hat genau das
+28 der 33 Fehlschläge verursacht: Sie scheiterten an **626 MiB** auf einer
+Karte, auf der nach dem ersten Fehler nur noch 43 MiB am Stück frei waren.
 
 Deshalb stehen `scikit-learn` und `xgboost` in `requirements.txt` mit `==`
 statt `>=`: Die Voreinstellungen *sind* hier der Untersuchungsgegenstand.

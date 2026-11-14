@@ -330,6 +330,109 @@ check("Umgebung nennt beide Versionen",
       "skl" in u and "xgb" in u and "py" in u, u)
 check("Umgebung steht in der Ergebniszeile", ergebnis["umgebung"] == u, ergebnis["umgebung"])
 
+print("\n=== Durchlauf: Grafikspeicher ===")
+# Ein vollgelaufener Grafikspeicher muss erkannt werden, ohne torch zu
+# importieren - sonst braeuchte auch ein Lauf mit nur rf und xgb torch.
+
+
+class _Knapp(Exception):
+    pass
+
+
+_Knapp.__name__ = "OutOfMemoryError"
+check("OutOfMemoryError wird erkannt", rm._ist_speichermangel(_Knapp("irgendwas")))
+check("Meldung im Text wird erkannt",
+      rm._ist_speichermangel(RuntimeError("CUDA out of memory. Tried to allocate")))
+check("gewoehnlicher Fehler gilt nicht als Speichermangel",
+      not rm._ist_speichermangel(ValueError("Spalte fehlt")))
+# Ohne torch in sys.modules darf das Freigeben nichts tun und nicht scheitern.
+check("Freigeben laeuft ohne torch durch", rm.gpu_speicher_freigeben() is None)
+check("GPU-Bericht schweigt ohne Fundamentmodell", rm.gpu_bericht(["rf", "xgb"]) is None)
+# Die Buendelgroesse gehoert in die Version, auch wenn der Versuch scheitert.
+rm._TABFM_BATCH_JETZT = 4
+check("Buendelgroesse steht in der Version",
+      rm.modell_version("tabfm") == "tabfm v1.0.0 batch4", rm.modell_version("tabfm"))
+check("Version bleibt leer statt zu scheitern", rm._version_ruhig("gibtesnicht") == "")
+
+# Rueckfall: zweimal zu wenig Speicher, dann klappt es mit einem Viertel.
+rm.TABFM_BATCH = 8
+versuche = []
+echt_rechne = rm.rechne
+
+
+def _rechne_knapp(slug, name, variante, zeile, metrik_text):
+    versuche.append(rm._TABFM_BATCH_JETZT)
+    if len(versuche) < 3:
+        raise _Knapp("CUDA out of memory. Tried to allocate 23.84 GiB")
+    return {"slug": slug, "modell": name, "status": "ok",
+            "modell_version": rm.modell_version(name)}
+
+
+rm.rechne = _rechne_knapp
+try:
+    zeile = rm.rechne_mit_rueckfall("mini", "tabfm", "n10000", {}, "AUC")
+finally:
+    rm.rechne = echt_rechne
+check("halbiert bis es passt", versuche == [8, 4, 2], str(versuche))
+check("Rueckfall liefert ein Ergebnis", zeile["status"] == "ok", str(zeile))
+check("die benutzte Buendelgroesse steht in der Zeile",
+      zeile["modell_version"] == "tabfm v1.0.0 batch2", zeile["modell_version"])
+
+# Bei 1 ist Schluss - sonst laeuft die Schleife endlos.
+versuche_bis_eins = []
+
+
+def _rechne_immer_knapp(slug, name, variante, zeile, metrik_text):
+    versuche_bis_eins.append(rm._TABFM_BATCH_JETZT)
+    raise _Knapp("CUDA out of memory")
+
+
+rm.rechne = _rechne_immer_knapp
+try:
+    zeile = rm.rechne_mit_rueckfall("mini", "tabfm", "n10000", {}, "AUC")
+finally:
+    rm.rechne = echt_rechne
+check("gibt bei batch1 auf", versuche_bis_eins == [8, 4, 2, 1], str(versuche_bis_eins))
+check("dann steht fehler in der Zeile", zeile["status"] == "fehler", str(zeile))
+check("die Fehlerzeile haelt die Buendelgroesse fest",
+      zeile["modell_version"] == "tabfm v1.0.0 batch1", zeile["modell_version"])
+
+# Ein Fehler, der nichts mit Speicher zu tun hat, wird nicht wiederholt.
+andere = []
+
+
+def _rechne_kaputt(slug, name, variante, zeile, metrik_text):
+    andere.append(1)
+    raise ValueError("Spalte fehlt")
+
+
+rm.rechne = _rechne_kaputt
+try:
+    zeile = rm.rechne_mit_rueckfall("mini", "tabfm", "n10000", {}, "AUC")
+finally:
+    rm.rechne = echt_rechne
+check("anderer Fehler wird nicht wiederholt", len(andere) == 1, str(len(andere)))
+check("und landet als fehler in der Zeile",
+      zeile["status"] == "fehler" and "ValueError" in zeile["hinweis"], str(zeile))
+
+# Bei rf und xgb gibt es nichts zu halbieren.
+rf_versuche = []
+
+
+def _rechne_rf_knapp(slug, name, variante, zeile, metrik_text):
+    rf_versuche.append(1)
+    raise _Knapp("CUDA out of memory")
+
+
+rm.rechne = _rechne_rf_knapp
+try:
+    rm.rechne_mit_rueckfall("mini", "rf", "n10000", {}, "AUC")
+finally:
+    rm.rechne = echt_rechne
+check("bei rf wird nicht halbiert", len(rf_versuche) == 1, str(len(rf_versuche)))
+rm._TABFM_BATCH_JETZT = rm.TABFM_BATCH
+rm._TABFM_BATCH_JETZT = rm.TABFM_BATCH
+
 print("\n=== Durchlauf: Ausgabepfad ===")
 argv_vorher = sys.argv
 ausgabe_dir = WORK / "drive_ordner"
