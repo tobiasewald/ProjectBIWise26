@@ -808,6 +808,11 @@ def main():
         append_row(row)
 
         if row["status"] == "ok":
+            # Achtung beim Lesen: sekunden_fit ist nur fit(). Bei Wald und
+            # Boosting ist das die ganze Arbeit, bei TabPFN und TabFM fast
+            # nichts - die rechnen in predict_proba, und das liegt ausserhalb
+            # dieses Zaehlers. Wer Laufzeiten zwischen den Familien
+            # vergleicht, muss sekunden_gesamt aus der CSV nehmen.
             print("{} {:.5f} (+-{:.5f}) in {:.1f} s".format(
                 row["metrik_code"], row["wert_mittel"], row["wert_std"], row["sekunden_fit"]))
         else:

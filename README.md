@@ -569,7 +569,25 @@ results/model_results.csv
 Eine Zeile pro Kombination aus Datensatz, Modell und Variante. Wichtige
 Spalten: `metrik_code`, `richtung`, `wert_mittel`, `wert_std`, `werte_folds`
 (die fünf Einzelwerte, `|`-getrennt), `n_zeilen_genutzt`, `sekunden_fit`,
-`status`, `hinweis` und `umgebung`.
+`sekunden_gesamt`, `status`, `hinweis` und `umgebung`.
+
+#### Welche der beiden Zeitspalten gilt
+
+`sekunden_fit` misst nur `fit()`, aufsummiert über die fünf Folds.
+`sekunden_gesamt` misst den ganzen Durchgang: Einlesen, Deckelung,
+Vorverarbeitung, Training *und* Vorhersage.
+
+Bei Wald und Boosting sind beide fast gleich — dort steckt die Arbeit im
+Training. Bei den Fundamentmodellen **nicht**: TabPFN und TabFM trainieren
+nicht, sie legen die Trainingsdaten als Kontext ab. Ihr `fit()` ist deshalb
+fast kostenlos, und die gesamte Rechenzeit fällt in `predict_proba`, das
+außerhalb dieses Zählers liegt. Ein TabFM-Datensatz, der in der
+Fortschrittszeile mit „0,6 s" erscheint, hat in Wirklichkeit ein Vielfaches
+davon gebraucht.
+
+**Für jeden Laufzeitvergleich zwischen den Modellfamilien gilt also
+`sekunden_gesamt`.** `sekunden_fit` ist nur innerhalb einer Familie
+aussagekräftig — etwa Wald gegen Boosting, oder `n10000` gegen `voll`.
 
 Jede fertige Kombination wird **sofort angehängt** und beim nächsten Lauf
 übersprungen. Eine abgebrochene Colab-Sitzung kostet also nur den gerade
