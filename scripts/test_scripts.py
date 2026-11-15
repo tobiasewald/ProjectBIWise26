@@ -351,7 +351,7 @@ check("GPU-Bericht schweigt ohne Fundamentmodell", rm.gpu_bericht(["rf", "xgb"])
 # Die Buendelgroesse gehoert in die Version, auch wenn der Versuch scheitert.
 rm._TABFM_BATCH_JETZT = 4
 check("Buendelgroesse steht in der Version",
-      rm.modell_version("tabfm") == "tabfm v1.0.0 batch4", rm.modell_version("tabfm"))
+      rm.modell_version("tabfm") == "tabfm v1.0.0 bfloat16 batch4 chunkauto", rm.modell_version("tabfm"))
 check("Version bleibt leer statt zu scheitern", rm._version_ruhig("gibtesnicht") == "")
 
 # Rueckfall: zweimal zu wenig Speicher, dann klappt es mit einem Viertel.
@@ -376,7 +376,7 @@ finally:
 check("halbiert bis es passt", versuche == [8, 4, 2], str(versuche))
 check("Rueckfall liefert ein Ergebnis", zeile["status"] == "ok", str(zeile))
 check("die benutzte Buendelgroesse steht in der Zeile",
-      zeile["modell_version"] == "tabfm v1.0.0 batch2", zeile["modell_version"])
+      zeile["modell_version"] == "tabfm v1.0.0 bfloat16 batch2 chunkauto", zeile["modell_version"])
 
 # Bei 1 ist Schluss - sonst laeuft die Schleife endlos.
 versuche_bis_eins = []
@@ -395,7 +395,7 @@ finally:
 check("gibt bei batch1 auf", versuche_bis_eins == [8, 4, 2, 1], str(versuche_bis_eins))
 check("dann steht fehler in der Zeile", zeile["status"] == "fehler", str(zeile))
 check("die Fehlerzeile haelt die Buendelgroesse fest",
-      zeile["modell_version"] == "tabfm v1.0.0 batch1", zeile["modell_version"])
+      zeile["modell_version"] == "tabfm v1.0.0 bfloat16 batch1 chunkauto", zeile["modell_version"])
 
 # Ein Fehler, der nichts mit Speicher zu tun hat, wird nicht wiederholt.
 andere = []
@@ -430,6 +430,69 @@ try:
 finally:
     rm.rechne = echt_rechne
 check("bei rf wird nicht halbiert", len(rf_versuche) == 1, str(len(rf_versuche)))
+
+# Haeppchengroessen: die Namen stammen aus TabFMs model.py. row_chunk_size
+# sitzt auf CellEmbedder und RowInteraction, ffn_chunk_size auf
+# MultiheadAttentionBlock, col_chunk_size auf ColEmbedding - und col soll
+# ausdruecklich nicht angefasst werden.
+
+
+class _Baustein:
+    def __init__(self, **knoepfe):
+        for k, v in knoepfe.items():
+            setattr(self, k, v)
+
+
+class _Modell:
+    def __init__(self, teile):
+        self._teile = teile
+
+    def modules(self):
+        return list(self._teile)
+
+
+zelle = _Baustein(row_chunk_size=4096)
+reihe = _Baustein(row_chunk_size=4096)
+spalte = _Baustein(col_chunk_size=16)
+block_a = _Baustein(ffn_chunk_size=8192)
+block_b = _Baustein(ffn_chunk_size=8192)
+ohne = _Baustein()
+modell = _Modell([zelle, reihe, spalte, block_a, block_b, ohne])
+
+getroffen = rm.tabfm_chunks_setzen(modell, 1024)
+check("alle Haeppchenknoepfe getroffen", getroffen == 4, str(getroffen))
+check("row auf den gewuenschten Wert",
+      (zelle.row_chunk_size, reihe.row_chunk_size) == (1024, 1024))
+check("ffn auf das Doppelte",
+      (block_a.ffn_chunk_size, block_b.ffn_chunk_size) == (2048, 2048))
+check("col bleibt unberuehrt", spalte.col_chunk_size == 16)
+check("Baustein ohne Knopf stoert nicht", not hasattr(ohne, "row_chunk_size"))
+check("leeres Modell meldet null", rm.tabfm_chunks_setzen(_Modell([]), 1024) == 0)
+
+# Die Voreinstellung 4096 ist laut Quelltext fuer 40 GB gewaehlt.
+check("T4 bekommt kleine Haeppchen", rm.tabfm_chunk_waehlen(14.56) == 1024,
+      str(rm.tabfm_chunk_waehlen(14.56)))
+check("L4 bekommt mittlere", rm.tabfm_chunk_waehlen(24.0) == 2048,
+      str(rm.tabfm_chunk_waehlen(24.0)))
+check("A100 behaelt die Voreinstellung", rm.tabfm_chunk_waehlen(40.0) == 4096,
+      str(rm.tabfm_chunk_waehlen(40.0)))
+
+# Praezision und Haeppchen gehoeren in die Version, weil die Praezision das
+# Ergebnis aendert und Zeilen sonst stillschweigend gemischt wuerden.
+rm._TABFM_BATCH_JETZT = 8
+rm._TABFM_CHUNK_JETZT = 1024
+check("Version nennt Praezision, Buendel und Haeppchen",
+      rm.modell_version("tabfm") == "tabfm v1.0.0 bfloat16 batch8 chunk1024",
+      rm.modell_version("tabfm"))
+rm.TABFM_DTYPE = "float32"
+check("andere Praezision ergibt andere Version",
+      rm.modell_version("tabfm") == "tabfm v1.0.0 float32 batch8 chunk1024",
+      rm.modell_version("tabfm"))
+rm.TABFM_DTYPE = "bfloat16"
+rm._TABFM_CHUNK_JETZT = 0
+check("ohne gesetzte Haeppchen steht auto",
+      rm.modell_version("tabfm").endswith("chunkauto"), rm.modell_version("tabfm"))
+rm._TABFM_BATCH_JETZT = rm.TABFM_BATCH
 rm._TABFM_BATCH_JETZT = rm.TABFM_BATCH
 rm._TABFM_BATCH_JETZT = rm.TABFM_BATCH
 

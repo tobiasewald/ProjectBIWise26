@@ -351,6 +351,99 @@ macht `run_models.py` jetzt beim Start und sagt es, wenn die Karte nicht
 passt. Wie viel die fehlenden Kerne wirklich ausmachen, ist hier nicht
 gemessen; es ist der erste Punkt, der auf einer Ampere-Karte zu prüfen ist.
 
+#### Woran es genau liegt
+
+Drei Dinge greifen ineinander. Alle drei stehen im Quelltext von TabFM, keines
+in dessen README.
+
+**1. Ein Fold ist eine einzige Folge.** TabFM lernt nicht, es liest die
+Trainingsdaten als Kontext. Ein Fold geht deshalb als *eine* Folge durch das
+Modell: 8.000 Kontextzeilen und 2.000 Testzeilen zusammen, 10.000 Positionen.
+`_batch_forward()` zerlegt die Arbeit — aber nur über die Ensemble-Achse:
+
+```python
+batch_size_per_process = self.batch_size or Xs.shape[0]
+n_batches = math.ceil(Xs.shape[0] / batch_size_per_process)
+```
+
+`Xs.shape[0]` ist die Zahl der Ensemble-Mitglieder. Die Folgenlänge wird nie
+geteilt. `batch_size` ist also kein Speicherventil für große Datensätze,
+sondern vereinzelt nur die 32 Mitglieder — und kostet dabei Zeit.
+
+**2. Die Häppchengrößen sind für eine 40-GB-Karte gewählt.** Dagegen hat
+TabFM intern durchaus etwas: Es zerlegt die großen Zwischenergebnisse selbst.
+Die Größen stehen als Modulkonstanten in `pytorch/model.py`:
+
+> Always-on activation-chunk sizes. TabFM runs the whole training fold as one
+> in-context sequence, so a single forward materialises activations that grow
+> with rows \* features and OOM the GPU on large tasks. […] Chunking is exact
+> (identical outputs) […] and it costs <1% runtime otherwise […]
+> **Sizes are chosen for memory safety on a 40 GB GPU** across TabArena-scale
+> tasks.
+>
+> `_ROW_CHUNK_SIZE = 4096` · `_COL_CHUNK_SIZE = 16` · `_FFN_CHUNK_SIZE = 8192`
+
+Auf einer Karte mit 14,56 GiB sind 4096er Häppchen zu groß. Das ist der
+eigentliche Grund für die 33 Fehlschläge — nicht `batch_size`.
+
+Die Autoren haben das vorgesehen. Im `TabFM`-Konstruktor steht über derselben
+Schleife, die die Konstanten verteilt: *„The per-block knobs stay settable
+(e.g. to None) for benchmarking."* `run_models.py` läuft deshalb nach dem
+Laden einmal über `model.modules()` und setzt sie kleiner — dieselbe
+Schleife, die TabFM selbst benutzt. Weil das Zerlegen laut Autoren **exakt**
+ist, ändert es die Zahlen nicht.
+
+**3. Die Aufmerksamkeit fällt auf den langsamsten Kern zurück.** `model.py`
+rechnet sie so:
+
+```python
+o = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask, scale=1.0)
+```
+
+Die Maske ist entscheidend. PyTorchs **Flash**-Kern verträgt keine Maske,
+fällt also von vornherein aus. Bleiben **mem_efficient** (Speicher wächst
+linear mit der Folgenlänge) und **math** (rechnet die ganze Matrix
+Folge × Folge aus, also quadratisch). Welcher von beiden geht, hängt von
+Karte *und* Präzision ab — und für `bfloat16` verlangen die schnellen Kerne
+Rechenfähigkeit 8.0. Auf einer T4 bleibt damit vermutlich nur `math`: die
+quadratische Variante, in einer Präzision, für die die Karte keine
+Tensorkerne hat.
+
+„Vermutlich", weil das von der PyTorch-Version abhängt und ich es hier nicht
+nachmessen kann. Deshalb misst `run_models.py` es jetzt selbst: Beim Start
+probiert es jeden Kern einmal mit Maske in der gewählten Präzision aus und
+schreibt hin, welcher geht. Das ersetzt die Vermutung durch eine Zeile im
+Protokoll.
+
+#### Was sich davon einstellen lässt
+
+| Schalter | Wirkung aufs Ergebnis | Wofür |
+|---|---|---|
+| `--tabfm-chunk` | **keine** (laut Autoren exakt) | Speicher. Voreinstellung: nach Kartengröße, 1024 unter 20 GiB, 2048 unter 32, sonst 4096 |
+| `--tabfm-batch` | **keine** (nur Bündelung) | Speicher, kostet aber Zeit. Zweite Wahl nach `--tabfm-chunk` |
+| `--tabfm-dtype` | **ja** | Zeit. `bfloat16` (Voreinstellung), `float32`, `float16` |
+
+Die Reihenfolge ist Absicht: Häppchen zuerst, weil sie laut Quelltext unter
+1 % Laufzeit kosten; das Bündel erst danach, weil es die 32 Mitglieder
+vereinzelt und damit echte Zeit kostet.
+
+`--tabfm-dtype` ist der einzige der drei, der die Zahlen ändert, und steht
+deshalb in `modell_version`. Was die `load()`-Doku dazu sagt:
+
+> The checkpoint is stored in float32, but the model is designed to run in
+> bfloat16 […] `dtype` is provided for float32 debugging / quality comparison
+
+| | |
+|---|---|
+| `bfloat16` | wie vorgesehen. Tensorkerne dafür erst ab Rechenfähigkeit 8.0 |
+| `float32` | die Präzision der gespeicherten Prüfsumme, von den Autoren zum Vergleich angeboten. Genauer als bfloat16, doppelter Speicher, auf der T4 ohne Nachbildung |
+| `float16` | erwähnen die Autoren **nicht**. Nur dafür hat eine T4 Tensorkerne, aber der Wertebereich ist viel kleiner — Überlauf ist möglich |
+
+Wer die Präzision wechselt, muss **S5E3 neu rechnen**: Die vorhandene Zeile
+ist in `bfloat16` entstanden (AUC 0,894161) und ist gleichzeitig die
+Gegenprobe — weicht eine andere Präzision dort deutlich ab oder liefert
+`nan`, ist sie unbrauchbar.
+
 ### Was „ungetunt“ heißt
 
 Gesetzt werden nur `random_state`, `n_jobs` und — bei TabFM — `device` und
@@ -362,6 +455,7 @@ Gesetzt werden nur `random_state`, `n_jobs` und — bei TabFM — `device` und
 | `n_jobs` | nutzt die vorhandenen Kerne |
 | `device` | legt TabFM auf die GPU, die es sonst nicht findet |
 | `batch_size` | bündelt TabFMs Ensemble-Mitglieder je Durchgang |
+| `row_chunk_size` / `ffn_chunk_size` | zerlegt TabFMs Zwischenergebnisse passend zur Karte |
 
 Alles andere bleibt auf der Voreinstellung der Bibliothek.
 

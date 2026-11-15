@@ -123,6 +123,95 @@ TABFM_BATCH = 8
 # Wert es am Ende war, steht in modell_version in der Ergebniszeile.
 _TABFM_BATCH_JETZT = TABFM_BATCH
 
+# Wie gross die Haeppchen sind, in die TabFM seine Zwischenergebnisse zerlegt.
+#
+# TabFM schiebt einen ganzen Fold als EINE Folge durch das Modell: 8.000
+# Kontextzeilen und 2.000 Testzeilen zusammen. Dabei entstehen Zwischen-
+# ergebnisse, die mit Zeilen x Merkmalen wachsen. Das Modell zerlegt die
+# deshalb von sich aus - mit festen Groessen, die oben in model.py stehen:
+#
+#   # Always-on activation-chunk sizes. [...] Chunking is exact (identical
+#   # outputs) and a no-op when an input is smaller than the chunk size, and
+#   # it costs <1% runtime otherwise, so it is always on.
+#   # Sizes are chosen for memory safety on a 40 GB GPU [...]
+#   _ROW_CHUNK_SIZE = 4096
+#   _FFN_CHUNK_SIZE = 8192
+#
+# "on a 40 GB GPU" ist der Haken: Auf einer T4 mit 14,56 GiB sind diese
+# Groessen zu gross, und genau daran sind am 14.11. 33 Datensaetze
+# gescheitert. Die Autoren haben das vorgesehen - im Konstruktor steht "The
+# per-block knobs stay settable" - und sie sagen selbst, dass das Zerlegen
+# exakt ist und unter 1 % Laufzeit kostet.
+#
+# Deshalb ist das hier die erste Wahl gegen Speichermangel und --tabfm-batch
+# erst die zweite: Kleinere Haeppchen kosten (fast) keine Zeit, ein kleineres
+# Buendel schon, weil es die 32 Ensemble-Mitglieder vereinzelt.
+#
+# 0 heisst: nach der Groesse der Karte waehlen, siehe tabfm_chunk_waehlen.
+TABFM_CHUNK = 0
+
+# In welcher Praezision TabFM rechnet.
+#
+# Laut load()-Doku ist die Pruefsumme in float32 gespeichert, das Modell aber
+# "designed to run in bfloat16", und dtype ist "provided for float32
+# debugging / quality comparison". Also:
+#
+#   bfloat16  die vorgesehene Voreinstellung. Tensorkerne dafuer gibt es erst
+#             ab Rechenfaehigkeit 8.0; eine T4 (7.5) rechnet es ohne.
+#   float32   die Praezision der gespeicherten Pruefsumme, von den Autoren
+#             ausdruecklich zum Vergleich angeboten. Genauer als bfloat16,
+#             braucht doppelt so viel Speicher, laeuft auf der T4 aber ohne
+#             Nachbildung.
+#   float16   erwaehnen die Autoren nicht. Nur dafuer hat eine T4 Tensorkerne,
+#             aber der Wertebereich ist viel kleiner als bei bfloat16, also
+#             kann es ueberlaufen. Nur mit Gegenprobe benutzen.
+#
+# Anders als die Haeppchengroesse ist das NICHT ergebnisneutral. Die gewaehlte
+# Praezision steht deshalb in modell_version in jeder Ergebniszeile.
+TABFM_DTYPE = "bfloat16"
+
+# Womit gerade gerechnet wird; wird in modell() gesetzt, sobald die Karte
+# bekannt ist, und steht danach in modell_version.
+_TABFM_CHUNK_JETZT = 0
+
+
+def tabfm_chunk_waehlen(gib):
+    """Haeppchengroesse fuer eine Karte mit gib Gigabyte Speicher.
+
+    Die Voreinstellung 4096 ist laut Quelltext fuer 40 GB gewaehlt. Verkleinert
+    im gleichen Verhaeltnis, auf Zweierpotenzen abgerundet. Die Zahl aendert
+    das Ergebnis nicht - nur, ob es auf die Karte passt.
+    """
+    if gib >= 32:
+        return 4096
+    if gib >= 20:
+        return 2048
+    return 1024
+
+
+def tabfm_chunks_setzen(model, zeilen):
+    """Setzt die Haeppchengroessen auf dem geladenen Modell.
+
+    Die Konstanten in model.py gelten nur beim Bauen; danach sind es
+    gewoehnliche Attribute der Bausteine. Der TabFM-Konstruktor sagt dazu:
+    "The per-block knobs stay settable (e.g. to None) for benchmarking."
+
+    ffn bekommt das Doppelte, so wie im Quelltext 4096 zu 8192 steht.
+    col_chunk_size bleibt, wie es ist: 16 ist schon klein.
+
+    Gibt zurueck, wie viele Bausteine umgestellt wurden - null waere ein
+    stiller Fehlschlag und soll auffallen.
+    """
+    getroffen = 0
+    for teil in model.modules():
+        if hasattr(teil, "row_chunk_size"):
+            teil.row_chunk_size = zeilen
+            getroffen += 1
+        if hasattr(teil, "ffn_chunk_size"):
+            teil.ffn_chunk_size = zeilen * 2
+            getroffen += 1
+    return getroffen
+
 
 def _mit_startwert(bauart, **kwargs):
     """Setzt random_state, wenn das Modell den Parameter kennt.
@@ -146,9 +235,11 @@ def modell_version(name):
         import tabpfn
         return "tabpfn {} {}".format(getattr(tabpfn, "__version__", "?"), TABPFN_VERSION)
     if name == "tabfm":
-        # Die Buendelgroesse steht mit dabei, damit nachvollziehbar ist, womit
-        # gerechnet wurde - sie aendert das Ergebnis nicht, wohl aber die Zeit.
-        return "tabfm v1.0.0 batch{}".format(_TABFM_BATCH_JETZT)
+        # Buendel und Haeppchen aendern das Ergebnis nicht, wohl aber die
+        # Zeit. Die Praezision aendert es doch - deshalb steht sie hier, und
+        # Zeilen mit verschiedener Praezision duerfen nicht gemischt werden.
+        return "tabfm v1.0.0 {} batch{} chunk{}".format(
+            TABFM_DTYPE, _TABFM_BATCH_JETZT, _TABFM_CHUNK_JETZT or "auto")
     return ""
 
 
@@ -212,15 +303,38 @@ def modell(name, aufgabe):
         # einzelner Datensatz braucht so Minuten statt Sekunden.
         import torch
 
+        global _TABFM_CHUNK_JETZT
+
         geraet = "cuda" if torch.cuda.is_available() else "cpu"
+
+        # 0 heisst: nach der Karte waehlen. Auf der CPU gibt es keinen Grund
+        # zu zerlegen, da bleibt die Voreinstellung des Modells.
+        if TABFM_CHUNK:
+            _TABFM_CHUNK_JETZT = TABFM_CHUNK
+        elif geraet == "cuda":
+            gib = torch.cuda.get_device_properties(0).total_memory / 1024 ** 3
+            _TABFM_CHUNK_JETZT = tabfm_chunk_waehlen(gib)
+        else:
+            _TABFM_CHUNK_JETZT = 0
 
         art = "regression" if aufgabe == "regression" else "classification"
         if art not in _TABFM_GEWICHTE:
-            print("TabFM laedt Gewichte ({}) auf {} ... ".format(art, geraet),
-                  end="", flush=True)
+            print("TabFM laedt Gewichte ({}) auf {} in {} ... ".format(
+                art, geraet, TABFM_DTYPE), end="", flush=True)
             _TABFM_GEWICHTE[art] = tabfm_v1_0_0.load(
-                model_type=art, device=geraet
+                model_type=art, device=geraet,
+                dtype=getattr(torch, TABFM_DTYPE),
             )
+            if _TABFM_CHUNK_JETZT:
+                getroffen = tabfm_chunks_setzen(
+                    _TABFM_GEWICHTE[art], _TABFM_CHUNK_JETZT
+                )
+                print("Haeppchen {} ({} Bausteine) ... ".format(
+                    _TABFM_CHUNK_JETZT, getroffen), end="", flush=True)
+                if not getroffen:
+                    print()
+                    print("ACHTUNG: keine Haeppchengroesse gesetzt - die")
+                    print("Attributnamen in model.py haben sich geaendert.")
         bauart = TabFMRegressor if art == "regression" else TabFMClassifier
         return _mit_startwert(
             bauart, model=_TABFM_GEWICHTE[art], batch_size=_TABFM_BATCH_JETZT
@@ -491,9 +605,62 @@ def gpu_bericht(modelle):
     haupt, neben = torch.cuda.get_device_capability(0)
     gib = torch.cuda.get_device_properties(0).total_memory / 1024 ** 3
     print("GPU: {} | Rechenfaehigkeit {}.{} | {:.1f} GiB".format(name, haupt, neben, gib))
-    if haupt < 8:
+    if haupt < 8 and TABFM_DTYPE == "bfloat16":
         print("  Achtung: Diese Karte hat keine bfloat16-Tensorkerne (erst ab 8.0).")
         print("  TabFM rechnet trotzdem, aber um ein Vielfaches langsamer.")
+        print("  --tabfm-dtype float32 ist die Praezision der gespeicherten")
+        print("  Pruefsumme und laeuft hier ohne Nachbildung; siehe README.")
+    print("  Haeppchengroesse: {}".format(
+        TABFM_CHUNK or tabfm_chunk_waehlen(gib)))
+    sdpa_bericht()
+
+
+def sdpa_bericht():
+    """Welcher Attention-Kern auf dieser Karte benutzbar ist.
+
+    TabFM ruft F.scaled_dot_product_attention mit einer Maske auf
+    (model.py: "o = F.scaled_dot_product_attention(q, k, v,
+    attn_mask=attn_mask, scale=1.0)"). PyTorch waehlt daraufhin selbst einen
+    Kern, und die Wahl entscheidet ueber Zeit und Speicher:
+
+      flash        schnell und sparsam, vertraegt aber keine Maske
+      mem_efficient  sparsam, Speicher waechst linear mit der Folgenlaenge
+      math         rechnet die ganze Matrix aus Folge x Folge aus, also
+                   quadratisch im Speicher - der langsame Rueckfall
+
+    Welche davon gehen, haengt von Karte und Praezision ab. Statt das zu
+    raten, wird es hier gemessen: ein winziger Aufruf je Kern, mit Maske,
+    in der Praezision, die auch TabFM benutzt.
+    """
+    try:
+        import torch
+        import torch.nn.functional as F
+        from torch.nn.attention import SDPBackend, sdpa_kernel
+    except ImportError:
+        return
+    if not torch.cuda.is_available():
+        return
+    try:
+        q = torch.zeros(1, 2, 64, 32, device="cuda",
+                        dtype=getattr(torch, TABFM_DTYPE))
+        maske = torch.ones(1, 1, 1, 64, dtype=torch.bool, device="cuda")
+    except Exception as exc:
+        print("  Attention-Kerne nicht pruefbar: " + str(exc)[:60])
+        return
+    ergebnis = []
+    for kern in (SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION,
+                 SDPBackend.MATH):
+        try:
+            with sdpa_kernel(kern):
+                F.scaled_dot_product_attention(q, q, q, attn_mask=maske)
+            ergebnis.append(kern.name.lower().replace("_attention", "") + ": ja")
+        except Exception:
+            ergebnis.append(kern.name.lower().replace("_attention", "") + ": nein")
+    print("  Attention mit Maske in {} -> {}".format(
+        TABFM_DTYPE, ", ".join(ergebnis)))
+    if all(e.endswith("nein") for e in ergebnis[:2]):
+        print("  Nur der math-Rueckfall: Speicher waechst quadratisch mit der")
+        print("  Zeilenzahl. Genau daran scheitern die grossen Datensaetze.")
 
 
 def _ist_speichermangel(exc):
@@ -563,6 +730,7 @@ def rechne_mit_rueckfall(slug, name, variante, zeile, metrik_text):
 
 def main():
     global DATA_DIR, OUT_FILE, TABPFN_VERSION, TABFM_BATCH, _TABFM_BATCH_JETZT
+    global TABFM_CHUNK, TABFM_DTYPE
 
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -581,11 +749,18 @@ def main():
                         help="Gewichtsstand von TabPFN, z. B. V2 oder V3_5")
     parser.add_argument("--tabfm-batch", type=int, default=TABFM_BATCH,
                         help="Ensemble-Mitglieder je Durchgang bei TabFM; kleiner bei zu wenig Grafikspeicher")
+    parser.add_argument("--tabfm-chunk", type=int, default=TABFM_CHUNK,
+                        help="Zeilen je Haeppchen bei TabFM, 0 = nach Kartengroesse; aendert das Ergebnis nicht")
+    parser.add_argument("--tabfm-dtype", default=TABFM_DTYPE,
+                        choices=["bfloat16", "float32", "float16"],
+                        help="Rechenpraezision von TabFM; aendert das Ergebnis, steht in modell_version")
     args = parser.parse_args()
 
     TABPFN_VERSION = args.tabpfn_version
     TABFM_BATCH = args.tabfm_batch
     _TABFM_BATCH_JETZT = TABFM_BATCH
+    TABFM_CHUNK = args.tabfm_chunk
+    TABFM_DTYPE = args.tabfm_dtype
     if args.daten:
         DATA_DIR = Path(args.daten)
     if args.ausgabe:
