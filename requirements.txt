@@ -39,6 +39,17 @@ matplotlib>=3.8
 # Colab-Notebook in eigenen Laufzeiten installiert, siehe
 # notebooks/colab_run_models.ipynb.
 #
-# Die TabFM-Installation hat scikit-learn zuletzt auf 1.6.1 gebracht, also auf
-# genau den Stand, der oben steht. Ob der Konflikt damit ganz verschwindet,
-# ist noch nicht geprueft - bis dahin bleiben die Laufzeiten getrennt.
+# Die TabFM-Installation laesst scikit-learn auf 1.6.1, also auf genau dem
+# Stand, der oben steht. Beobachtet am 15.11.2026 in einer Colab-Laufzeit mit
+# torch 2.14.1+cu130 (L4): Nach "pip install -e .[pytorch]" meldete pip als
+# einzigen Konflikt
+#
+#   inflect 7.6.0 requires typeguard>=4.0.1, but you have typeguard 2.13.3
+#
+# TabFM setzt typeguard 2.13.3 fuer jaxtyping. inflect gehoert zur
+# Colab-Grundausstattung und kommt in diesem Projekt nirgends vor, weder in
+# den Skripten noch in dieser Datei - der Konflikt trifft uns also nicht.
+#
+# Trotzdem bleiben die Laufzeiten getrennt: Das ist eine Beobachtung an einem
+# Tag mit einem Colab-Abbild, keine Zusage. Die Zelle im Notebook prueft die
+# Version nach der Installation und sagt es, wenn sie sich doch verschiebt.

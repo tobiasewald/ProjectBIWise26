@@ -286,9 +286,17 @@ Untersuchungsgegenstand. TabFM darf deshalb **nicht** in derselben Laufzeit
 installiert werden wie ein `rf`- oder `xgb`-Lauf. Das Notebook trennt das; die
 Ergebnisdatei wird nur angehängt, es geht dabei nichts verloren.
 
-Zuletzt hat die TabFM-Installation `scikit-learn` auf 1.6.1 gebracht, also auf
-genau den Stand aus `requirements.txt`. Möglicherweise entfällt der Konflikt
-damit; geprüft ist das nicht, also bleiben die Laufzeiten vorerst getrennt.
+Beobachtet am 15.11.2026 (Colab, torch 2.14.1+cu130 auf einer L4): Die
+TabFM-Installation lässt `scikit-learn` auf 1.6.1, also auf genau dem Stand
+aus `requirements.txt`. Der einzige Konflikt, den `pip` meldete, war
+`inflect 7.6.0 requires typeguard>=4.0.1, but you have typeguard 2.13.3` —
+TabFM setzt `typeguard` für `jaxtyping` fest, und `inflect` gehört zur
+Colab-Grundausstattung und kommt in diesem Projekt nirgends vor. Der Konflikt
+trifft uns also nicht.
+
+Die Laufzeiten bleiben trotzdem getrennt. Das ist eine Beobachtung an einem Tag
+mit einem Colab-Abbild, keine Zusage — und die Zelle im Notebook prüft die
+Version nach der Installation, damit eine Verschiebung nicht unbemerkt bleibt.
 
 **TabFM wählt sein Rechengerät nicht selbst.** `tabfm_v1_0_0.load()` hat
 `device=None` voreingestellt, und das bedeutet laut Quelltext CPU — anders als
