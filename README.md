@@ -447,6 +447,28 @@ deshalb in `modell_version`. Was die `load()`-Doku dazu sagt:
 | `float32` | die Präzision der gespeicherten Prüfsumme, von den Autoren zum Vergleich angeboten. Genauer als bfloat16, doppelter Speicher, auf der T4 ohne Nachbildung |
 | `float16` | erwähnen die Autoren **nicht**. Nur dafür hat eine T4 Tensorkerne, aber der Wertebereich ist viel kleiner — Überlauf ist möglich |
 
+#### Zwei Zeilen sagen `chunkauto`
+
+In der Ergebnisdatei melden **S5E7** und **S4E3** `chunkauto`, alle anderen
+TabFM-Zeilen `chunk2048`. Das ist ein Fehler im Protokoll, nicht in der
+Rechnung: `modell_version` wurde früher am Anfang von `rechne()` gebildet,
+und zu diesem Zeitpunkt hatte `modell()` die Gewichte noch nicht geladen —
+die Häppchengröße stand also noch nicht fest. Betroffen war genau der
+*erste* Datensatz eines Laufs; ab dem zweiten stand der Wert vom
+vorhergehenden noch da. Gerechnet wurde in allen 33 Fällen mit 2048, denn
+`modell()` setzt die Größe beim Laden, also vor der ersten Vorhersage.
+
+Seit dem Fehler wird `modell_version` am Ende von `rechne()` noch einmal
+gesetzt, wenn das Modell gebaut ist. Die beiden Zeilen bleiben so stehen, wie
+sie gemessen wurden; wer sie neu rechnen will, braucht `--neu`.
+
+Die Zeile zu **S5E3** stammt aus dem Lauf vom 14.11. und sagt nur
+`tabfm v1.0.0 batch8` — damals gab es weder die Angabe der Präzision noch
+die Häppchen. Gerechnet wurde sie in `bfloat16` (der Voreinstellung von
+`load()`) mit TabFMs eigenen 4096er Häppchen, die bei 2.190 Zeilen auch auf
+eine T4 passten. Weil das Zerlegen laut Autoren exakt ist, ist die Zeile mit
+den anderen vergleichbar.
+
 Wer die Präzision wechselt, muss **S5E3 neu rechnen**: Die vorhandene Zeile
 ist in `bfloat16` entstanden (AUC 0,894161) und ist gleichzeitig die
 Gegenprobe — weicht eine andere Präzision dort deutlich ab oder liefert

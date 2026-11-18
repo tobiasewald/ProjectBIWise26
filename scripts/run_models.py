@@ -495,7 +495,13 @@ def rechne(slug, name, variante, zeile, metrik_text):
     basis = {
         "slug": slug, "modell": name, "variante": variante, "aufgabe": aufgabe,
         "metrik": metrik_text, "metrik_code": code, "richtung": mk.RICHTUNG[code],
-        "folds": FOLDS, "umgebung": umgebung(), "modell_version": modell_version(name),
+        "folds": FOLDS, "umgebung": umgebung(),
+        # Vorlaeufig. Bei TabFM steht die Haeppchengroesse erst fest, nachdem
+        # modell() die Gewichte geladen hat, und das passiert erst in der
+        # Fold-Schleife weiter unten. Die endgueltige Version wird darum am
+        # Ende noch einmal gesetzt. Die frueheren Rueckgaben oben brauchen
+        # diesen Wert: dort wurde nie ein Modell gebaut.
+        "modell_version": modell_version(name),
         "zeitpunkt": datetime.now().isoformat(timespec="seconds"),
         "n_zeilen_genutzt": "", "n_features": "", "wert_mittel": "", "wert_std": "",
         "werte_folds": "", "sekunden_fit": "", "sekunden_gesamt": "", "hinweis": "",
@@ -543,6 +549,7 @@ def rechne(slug, name, variante, zeile, metrik_text):
         "werte_folds": "|".join("{:.6f}".format(w) for w in werte),
         "sekunden_fit": round(sekunden_fit, 2),
         "sekunden_gesamt": round(time.perf_counter() - gesamt_start, 2),
+        "modell_version": modell_version(name),
         "status": "ok",
         "hinweis": "; ".join(hinweise),
     })
