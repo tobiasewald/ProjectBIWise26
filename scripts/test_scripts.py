@@ -254,6 +254,7 @@ check("Metrik passt zur Aufgabe", mk.passt_zur_aufgabe("auc", "binaer"))
 
 print("\n=== Durchlauf: Teilstichprobe ===")
 import pandas as pd_  # noqa: E402
+from sklearn.pipeline import Pipeline  # noqa: E402
 
 X_test = pd_.DataFrame({"a": range(100)})
 y_test = pd_.Series([0] * 90 + [1] * 10)
@@ -495,6 +496,196 @@ check("ohne gesetzte Haeppchen steht auto",
 rm._TABFM_BATCH_JETZT = rm.TABFM_BATCH
 rm._TABFM_BATCH_JETZT = rm.TABFM_BATCH
 rm._TABFM_BATCH_JETZT = rm.TABFM_BATCH
+
+print("\n=== Durchlauf: TabDPT-Huelle ===")
+# TabDPT nimmt seine Schalter in predict(), nicht im Konstruktor, besteht auf
+# numpy und gibt bei der Klassifikation Klassenindizes zurueck. Die Huelle
+# glaettet das; getestet wird gegen eine Nachbildung, damit hier kein
+# fremdes Modell geladen werden muss.
+
+
+class _TabDPTNachbildung:
+    """Haelt fest, womit sie aufgerufen wurde, und besteht auf numpy."""
+
+    def __init__(self):
+        self.gefittet = None
+        self.aufrufe = []
+
+    def fit(self, X, y):
+        assert isinstance(X, np_.ndarray), "X must be a numpy array"
+        assert isinstance(y, np_.ndarray), "y must be a numpy array"
+        self.gefittet = (X, y)
+        return self
+
+    def predict(self, X, **kwargs):
+        self.aufrufe.append(("predict", kwargs))
+        # Wie das echte TabDPT: Klassenindizes, nicht Klassennamen.
+        return np_.zeros(len(X), dtype=int)
+
+    def ensemble_predict_proba(self, X, **kwargs):
+        self.aufrufe.append(("ensemble_predict_proba", kwargs))
+        return np_.tile([0.7, 0.2, 0.1], (len(X), 1))
+
+    def predict_proba(self, X, **kwargs):
+        self.aufrufe.append(("predict_proba", kwargs))
+        raise AssertionError("predict_proba waere ein Durchgang ohne Ensemble")
+
+
+# y kommt als pandas-Series aus dem Fold und hat eine Luecke: Klasse 2 fehlt.
+X_mini = pd_.DataFrame({"a": [1.0, 2.0, 3.0, 4.0], "b": [0.0, 1.0, 0.0, 1.0]})
+y_mini = pd_.Series([0, 1, 3, 3])
+
+nach = _TabDPTNachbildung()
+huelle = rm.TabDPTHuelle(nach, "classification", n_ensembles=8)
+huelle.fit(X_mini, y_mini)
+
+check("fit bekommt numpy statt pandas",
+      isinstance(nach.gefittet[0], np_.ndarray)
+      and isinstance(nach.gefittet[1], np_.ndarray))
+check("classes_ haelt die echten Klassen",
+      list(huelle.classes_) == [0, 1, 3], str(huelle.classes_))
+check("Luecke in den Klassen wird geschlossen",
+      sorted(set(nach.gefittet[1].tolist())) == [0, 1, 2],
+      str(nach.gefittet[1]))
+
+# predict gibt Indizes zurueck, die Huelle muss sie zurueckuebersetzen.
+vorhersage = huelle.predict(X_mini)
+check("Klassenindizes werden zu Klassen", list(vorhersage) == [0, 0, 0, 0],
+      str(vorhersage))
+
+nach2 = _TabDPTNachbildung()
+h2 = rm.TabDPTHuelle(nach2, "classification", n_ensembles=4)
+h2.fit(X_mini, pd_.Series([0, 1, 2, 2]))
+h2.predict(X_mini)
+check("predict nimmt die Schalter mit",
+      nach2.aufrufe[-1][1] == {"n_ensembles": 4, "seed": rm.SEED},
+      str(nach2.aufrufe[-1]))
+
+# Der wichtigste Punkt: Wahrscheinlichkeiten muessen ueber
+# ensemble_predict_proba laufen. predict_proba kennt kein n_ensembles und
+# waere ein einzelner Durchgang, also ein anderes Modell.
+h2.predict_proba(X_mini)
+check("Wahrscheinlichkeiten gehen ueber das Ensemble",
+      nach2.aufrufe[-1][0] == "ensemble_predict_proba",
+      nach2.aufrufe[-1][0])
+
+# Startwert: ohne ihn waere das Ensemble nicht wiederholbar.
+check("der Startwert wird immer mitgegeben",
+      all(k[1].get("seed") == rm.SEED for k in nach2.aufrufe
+          if k[0] != "predict_proba"))
+
+# 0 und None heissen 'Voreinstellung der Bibliothek' und werden weggelassen,
+# damit TabDPT seine eigenen Vorgaben benutzt.
+h3 = rm.TabDPTHuelle(_TabDPTNachbildung(), "classification",
+                     context_size=None, batch_size=None)
+check("Voreinstellungen werden nicht ueberschrieben",
+      set(h3._schalter()) == {"n_ensembles", "seed"}, str(h3._schalter()))
+h4 = rm.TabDPTHuelle(_TabDPTNachbildung(), "classification",
+                     context_size=2048, batch_size=512)
+check("gesetzte Werte werden durchgegeben",
+      h4._schalter()["context_size"] == 2048
+      and h4._schalter()["batch_size"] == 512, str(h4._schalter()))
+
+# Regression: kein classes_, y als Fliesskommazahl.
+nachr = _TabDPTNachbildung()
+hr = rm.TabDPTHuelle(nachr, "regression")
+hr.fit(X_mini, pd_.Series([1.5, 2.5, 3.5, 4.5]))
+check("Regression setzt kein classes_", not hasattr(hr, "classes_"))
+check("Regression fittet auf Fliesskommazahlen",
+      nachr.gefittet[1].dtype.kind == "f", str(nachr.gefittet[1].dtype))
+
+# Version: ens und kontext aendern das Ergebnis und muessen drinstehen.
+rm.TABDPT_ENSEMBLE = 8
+rm.TABDPT_KONTEXT = 0
+rm._TABDPT_HAEPPCHEN_JETZT = 0
+check("Version nennt Ensemble, Kontext und Haeppchen",
+      rm.modell_version("tabdpt").startswith("tabdpt ")
+      and rm.modell_version("tabdpt").endswith("ens8 kontextalle haeppchenauto"),
+      rm.modell_version("tabdpt"))
+rm.TABDPT_KONTEXT = 2048
+rm._TABDPT_HAEPPCHEN_JETZT = 4096
+check("gesetzter Kontext steht in der Version",
+      rm.modell_version("tabdpt").endswith("ens8 kontext2048 haeppchen4096"),
+      rm.modell_version("tabdpt"))
+rm.TABDPT_KONTEXT = 0
+rm._TABDPT_HAEPPCHEN_JETZT = 0
+
+# Rueckfall bei Speichermangel: erst von der Voreinstellung auf 8192, dann
+# halbieren bis 256. Der Kontext bleibt unangetastet.
+rm.TABDPT_HAEPPCHEN = 0
+dpt_versuche = []
+echt_rechne_dpt = rm.rechne
+
+
+def _rechne_dpt_knapp(slug, name, variante, zeile, metrik_text):
+    dpt_versuche.append(rm._TABDPT_HAEPPCHEN_JETZT)
+    raise _Knapp("CUDA out of memory. Tried to allocate 1.68 GiB")
+
+
+rm.rechne = _rechne_dpt_knapp
+try:
+    zeile_dpt = rm.rechne_mit_rueckfall("mini", "tabdpt", "n10000", {}, "AUC")
+finally:
+    rm.rechne = echt_rechne_dpt
+check("Haeppchen werden halbiert bis 256",
+      dpt_versuche == [0, 8192, 4096, 2048, 1024, 512, 256], str(dpt_versuche))
+check("danach wird aufgegeben", zeile_dpt["status"] == "fehler",
+      str(zeile_dpt))
+check("der Kontext bleibt unangetastet", rm.TABDPT_KONTEXT == 0)
+
+# Ein gewoehnlicher Fehler wird nicht als Speichermangel behandelt.
+dpt_einmal = []
+rm._TABDPT_HAEPPCHEN_JETZT = 0
+
+
+def _rechne_dpt_kaputt(slug, name, variante, zeile, metrik_text):
+    dpt_einmal.append(rm._TABDPT_HAEPPCHEN_JETZT)
+    raise ValueError("Spalte fehlt")
+
+
+rm.rechne = _rechne_dpt_kaputt
+try:
+    rm.rechne_mit_rueckfall("mini", "tabdpt", "n10000", {}, "AUC")
+finally:
+    rm.rechne = echt_rechne_dpt
+check("ein echter Fehler wird nicht wiederholt", dpt_einmal == [0],
+      str(dpt_einmal))
+
+# Der eigentliche Pruefstein: die Huelle in derselben Pipeline, die rechne()
+# baut. Dort kommt X als numpy aus dem ColumnTransformer und y als Series,
+# und die Metriken greifen auf classes_ zu. Mit Textspalte, damit der
+# OrdinalEncoder mitlaeuft.
+X_pipe = pd_.DataFrame({
+    "zahl": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+    "text": ["a", "b", "a", "b", "a", "b"],
+})
+y_pipe = pd_.Series([0, 1, 0, 1, 0, 1])
+nachp = _TabDPTNachbildung()
+pipe_dpt = Pipeline([
+    ("vor", rm.vorverarbeitung(X_pipe)),
+    ("modell", rm.TabDPTHuelle(nachp, "classification")),
+])
+pipe_dpt.fit(X_pipe, y_pipe)
+check("Huelle fittet in der Pipeline", nachp.gefittet is not None)
+check("der ColumnTransformer liefert numpy an TabDPT",
+      isinstance(nachp.gefittet[0], np_.ndarray)
+      and nachp.gefittet[0].shape == (6, 2), str(nachp.gefittet[0].shape))
+proba = pipe_dpt.predict_proba(X_pipe)
+check("predict_proba laeuft durch die Pipeline", proba.shape[0] == 6,
+      str(proba.shape))
+check("classes_ ist ueber die Pipeline erreichbar",
+      list(pipe_dpt.named_steps["modell"].classes_) == [0, 1],
+      str(pipe_dpt.named_steps["modell"].classes_))
+check("auch ueber die Pipeline geht es ueber das Ensemble",
+      nachp.aufrufe[-1][0] == "ensemble_predict_proba", nachp.aufrufe[-1][0])
+
+# Und der TabFM-Zweig darf von TabDPT nichts abbekommen.
+rm._TABFM_BATCH_JETZT = rm.TABFM_BATCH
+rm._TABDPT_HAEPPCHEN_JETZT = rm.TABDPT_HAEPPCHEN
+check("tabdpt steht in der Modellliste", "tabdpt" in rm.MODELLE)
+check("GPU-Bericht gilt auch fuer tabdpt",
+      rm.gpu_bericht(["rf", "xgb"]) is None)
+
 
 print("\n=== Durchlauf: Ausgabepfad ===")
 argv_vorher = sys.argv

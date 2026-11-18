@@ -49,6 +49,7 @@ import numpy as np
 import pandas as pd
 import sklearn
 import xgboost
+from sklearn.base import BaseEstimator
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.impute import SimpleImputer
@@ -78,7 +79,7 @@ COLUMNS = [
 ]
 
 KLASSIFIKATION = {"binaer", "multiklasse"}
-MODELLE = ["rf", "xgb", "tabpfn", "tabfm"]
+MODELLE = ["rf", "xgb", "tabpfn", "tabfm", "tabdpt"]
 
 # TabPFN-Gewichtsstand. Gerechnet wird in jedem Fall lokal; der Unterschied
 # liegt nur darin, ob die Gewichte frei heruntergeladen werden duerfen.
@@ -174,6 +175,48 @@ TABFM_DTYPE = "bfloat16"
 # bekannt ist, und steht danach in modell_version.
 _TABFM_CHUNK_JETZT = 0
 
+# TabDPT laedt seine Gewichte von Hugging Face, wie TabFM, und auch hier darf
+# das nicht pro Fold neu passieren: TabDPT liest die Pruefsumme in *jedem*
+# Konstruktor neu ein, und bei S4E3 waeren das 35 Aufrufe (7 Zielspalten x 5
+# Folds). Gemerkt wird daher der fertige Schaetzer je Aufgabenart. Ihn erneut
+# zu fitten ist gefahrlos - fit() ueberschreibt Imputer, Skalierer,
+# Kontextzeilen und Klassenzahl vollstaendig.
+_TABDPT_SCHAETZER = {}
+
+# Wie viele Durchgaenge TabDPT mittelt. 8 ist die Voreinstellung der
+# Bibliothek. Anders als TabFMs batch_size ist das KEINE reine Buendelung,
+# sondern die Anzahl der Mitglieder - der Wert aendert also das Ergebnis und
+# steht deshalb in modell_version.
+TABDPT_ENSEMBLE = 8
+
+# Wie viele Trainingszeilen TabDPT hoechstens in den Kontext nimmt.
+# 0 heisst None, und das ist die Voreinstellung der Bibliothek: alle. Aus der
+# Doku von predict():
+#
+#   context_size: Maximum number of train points in the context. Uses all
+#                 points if `None`, which can lead to GPU OOMs. Otherwise
+#                 reduces context size based on `context_reduction` setting.
+#
+# Das veroeffentlichte TabDPT-Paper rechnet mit 2048. Wir bleiben bei der
+# Voreinstellung, weil die Studie ungetunte Modelle vergleicht - und weil ein
+# kleinerer Kontext das Ergebnis aendert, nicht nur die Zeit. Steht deshalb
+# ebenfalls in modell_version.
+TABDPT_KONTEXT = 0
+
+# Wie viele Testzeilen je Durchgang. 0 heisst None, also die Voreinstellung
+# der Bibliothek (laut Quelltext 4096 auf der CPU, 128k auf der GPU). Das ist
+# die ergebnisneutrale Stellschraube - dieselbe Rechnung, nur in mehr
+# Haeppchen - und damit das, was die Hauptschleife bei Speichermangel
+# verkleinert, bevor sie etwas anderes anfasst.
+TABDPT_HAEPPCHEN = 0
+_TABDPT_HAEPPCHEN_JETZT = TABDPT_HAEPPCHEN
+
+# torch.compile. Voreinstellung der Bibliothek ist True. Das README von
+# TabDPT warnt: "If you experience errors caused by torch compile (e.g.,
+# InductorError), try updating package versions and system drivers." Falls es
+# in einer Colab-Laufzeit klemmt, schaltet --tabdpt-ohne-compile es ab.
+TABDPT_COMPILE = True
+
 
 def tabfm_chunk_waehlen(gib):
     """Haeppchengroesse fuer eine Karte mit gib Gigabyte Speicher.
@@ -225,6 +268,95 @@ def _mit_startwert(bauart, **kwargs):
         return bauart(**kwargs)
 
 
+def _paketversion(paket):
+    """Installierte Version eines Pakets, ohne sich auf __version__ zu verlassen."""
+    try:
+        from importlib.metadata import version
+        return version(paket)
+    except Exception:
+        try:
+            return getattr(__import__(paket), "__version__", "?")
+        except Exception:
+            return "?"
+
+
+class TabDPTHuelle(BaseEstimator):
+    """Macht aus TabDPT einen Schaetzer, der in eine sklearn-Pipeline passt.
+
+    Vier Dinge weichen bei TabDPT von allem anderen in diesem Projekt ab.
+    Keine dieser Anpassungen ist Tuning - sie stellen nur her, was die
+    anderen vier Modelle von sich aus koennen.
+
+    1. Die Schalter sitzen auf predict(), nicht im Konstruktor:
+
+           model.predict(X, n_ensembles=8, context_size=None,
+                         batch_size=None, seed=42)
+
+       Eine Pipeline ruft predict(X) aber selbst auf und gibt nichts weiter.
+       Die Werte werden deshalb hier gemerkt und beim Aufruf eingesetzt.
+
+    2. seed ist None voreingestellt, das Ensemble also nicht reproduzierbar.
+       Hier wird SEED gesetzt - dasselbe, was random_state=SEED bei rf, xgb
+       und TabPFN tut.
+
+    3. Wahrscheinlichkeiten mit Ensemble heissen bei TabDPT
+       ensemble_predict_proba(). predict_proba() kennt gar kein
+       n_ensembles und waere ein einzelner Durchgang, also ein anderes
+       Modell als das, das predict() benutzt. Diese Huelle ruft fuer beides
+       denselben Weg auf.
+
+    4. fit() besteht per assert auf numpy-Arrays ("X must be a numpy
+       array"), y kommt bei uns aber als pandas-Series aus dem Fold.
+       Ausserdem gibt predict() bei der Klassifikation Klassen*indizes*
+       zurueck, und ein classes_, das die Metriken brauchen, gibt es nicht.
+    """
+
+    def __init__(self, schaetzer, aufgabe, n_ensembles=8,
+                 context_size=None, batch_size=None, seed=SEED):
+        self.schaetzer = schaetzer
+        self.aufgabe = aufgabe
+        self.n_ensembles = n_ensembles
+        self.context_size = context_size
+        self.batch_size = batch_size
+        self.seed = seed
+
+    def _schalter(self):
+        """Was bei jedem Aufruf mitgegeben wird. 0 und None heissen 'Voreinstellung'."""
+        aus = {"n_ensembles": self.n_ensembles, "seed": self.seed}
+        if self.context_size:
+            aus["context_size"] = self.context_size
+        if self.batch_size:
+            aus["batch_size"] = self.batch_size
+        return aus
+
+    def fit(self, X, y):
+        X = np.asarray(X, dtype=float)
+        y = np.asarray(y)
+        if self.aufgabe == "regression":
+            self.schaetzer.fit(X, y.astype(float))
+            return self
+
+        # Die Klassen werden je Fold auf 0..k-1 zusammengeschoben. rechne()
+        # kodiert y schon vorher, aber wenn eine seltene Klasse in einem Fold
+        # fehlt, entstehen Luecken (etwa 0, 1, 3). TabDPT schneidet die
+        # Ausgabe dann auf die ersten num_classes Spalten ab, und Spalte 2
+        # waere nicht mehr Klasse 3. return_inverse schliesst die Luecke, und
+        # classes_ haelt die Rueckuebersetzung.
+        self.classes_, dicht = np.unique(y, return_inverse=True)
+        self.schaetzer.fit(X, dicht.astype(int))
+        return self
+
+    def predict(self, X):
+        aus = self.schaetzer.predict(np.asarray(X, dtype=float), **self._schalter())
+        if self.aufgabe == "regression":
+            return np.asarray(aus)
+        return self.classes_[np.asarray(aus, dtype=int)]
+
+    def predict_proba(self, X):
+        return self.schaetzer.ensemble_predict_proba(
+            np.asarray(X, dtype=float), **self._schalter())
+
+
 def modell_version(name):
     """Welcher Gewichtsstand gemessen wurde.
 
@@ -240,6 +372,17 @@ def modell_version(name):
         # Zeilen mit verschiedener Praezision duerfen nicht gemischt werden.
         return "tabfm v1.0.0 {} batch{} chunk{}".format(
             TABFM_DTYPE, _TABFM_BATCH_JETZT, _TABFM_CHUNK_JETZT or "auto")
+    if name == "tabdpt":
+        # Die Paketversion ist hier auch die Modellversion: "We currently
+        # update the minor version number when a new model version is
+        # released, while the patch version number is used for library
+        # changes that don't involve changes to the underlying model."
+        #
+        # ens und kontext aendern das Ergebnis, haeppchen nicht. Zeilen mit
+        # verschiedenem ens oder kontext duerfen nicht gemischt werden.
+        return "tabdpt {} ens{} kontext{} haeppchen{}".format(
+            _paketversion("tabdpt"), TABDPT_ENSEMBLE,
+            TABDPT_KONTEXT or "alle", _TABDPT_HAEPPCHEN_JETZT or "auto")
     return ""
 
 
@@ -338,6 +481,29 @@ def modell(name, aufgabe):
         bauart = TabFMRegressor if art == "regression" else TabFMClassifier
         return _mit_startwert(
             bauart, model=_TABFM_GEWICHTE[art], batch_size=_TABFM_BATCH_JETZT
+        )
+
+    if name == "tabdpt":
+        from tabdpt import TabDPTClassifier, TabDPTRegressor
+
+        art = "regression" if aufgabe == "regression" else "classification"
+        if art not in _TABDPT_SCHAETZER:
+            bauart = TabDPTRegressor if art == "regression" else TabDPTClassifier
+            print("TabDPT laedt Gewichte ({}) ... ".format(art),
+                  end="", flush=True)
+            # device bleibt offen: TabDPT nimmt laut Quelltext von sich aus
+            # eine vorhandene CUDA-Karte ("device or (cuda if
+            # torch.cuda.is_available() else cpu)"), anders als TabFM.
+            # verbose=False nimmt nur den tqdm-Balken aus der Ausgabe.
+            _TABDPT_SCHAETZER[art] = bauart(
+                compile=TABDPT_COMPILE, verbose=False
+            )
+        return TabDPTHuelle(
+            _TABDPT_SCHAETZER[art], art,
+            n_ensembles=TABDPT_ENSEMBLE,
+            context_size=TABDPT_KONTEXT or None,
+            batch_size=_TABDPT_HAEPPCHEN_JETZT or None,
+            seed=SEED,
         )
 
     raise ValueError("Unbekanntes Modell " + repr(name))
@@ -598,7 +764,7 @@ def gpu_bericht(modelle):
     ihr rechnet PyTorch bfloat16, aber ohne diese Kerne. Es laeuft also, nur
     sehr viel langsamer, und keine Warnung sagt das.
     """
-    if not any(m in modelle for m in ("tabpfn", "tabfm")):
+    if not any(m in modelle for m in ("tabpfn", "tabfm", "tabdpt")):
         return
     try:
         import torch
@@ -710,9 +876,10 @@ def rechne_mit_rueckfall(slug, name, variante, zeile, metrik_text):
     aendert - nur an der Zeit. Womit es am Ende geklappt hat, steht in
     modell_version in der Ergebniszeile.
     """
-    global _TABFM_BATCH_JETZT
+    global _TABFM_BATCH_JETZT, _TABDPT_HAEPPCHEN_JETZT
 
     _TABFM_BATCH_JETZT = TABFM_BATCH
+    _TABDPT_HAEPPCHEN_JETZT = TABDPT_HAEPPCHEN
     while True:
         try:
             return rechne(slug, name, variante, zeile, metrik_text)
@@ -726,6 +893,18 @@ def rechne_mit_rueckfall(slug, name, variante, zeile, metrik_text):
                 print("Speicher knapp, nochmal mit batch{} ... ".format(
                     _TABFM_BATCH_JETZT), end="", flush=True)
                 continue
+            # Bei TabDPT wird die Zahl der Testzeilen je Durchgang kleiner.
+            # Beim ersten Mal von der Voreinstellung (128k auf der GPU) auf
+            # einen handlichen Wert, danach halbieren. Das Ergebnis bleibt
+            # dasselbe, nur die Zahl der Durchgaenge steigt. Der Kontext wird
+            # NICHT angetastet - der wuerde das Ergebnis aendern.
+            if knapp and name == "tabdpt" and _TABDPT_HAEPPCHEN_JETZT != 256:
+                _TABDPT_HAEPPCHEN_JETZT = (
+                    8192 if not _TABDPT_HAEPPCHEN_JETZT
+                    else max(256, _TABDPT_HAEPPCHEN_JETZT // 2))
+                print("Speicher knapp, nochmal mit haeppchen{} ... ".format(
+                    _TABDPT_HAEPPCHEN_JETZT), end="", flush=True)
+                continue
             return {
                 "slug": slug, "modell": name, "variante": variante,
                 "status": "fehler",
@@ -738,6 +917,8 @@ def rechne_mit_rueckfall(slug, name, variante, zeile, metrik_text):
 def main():
     global DATA_DIR, OUT_FILE, TABPFN_VERSION, TABFM_BATCH, _TABFM_BATCH_JETZT
     global TABFM_CHUNK, TABFM_DTYPE
+    global TABDPT_ENSEMBLE, TABDPT_KONTEXT, TABDPT_HAEPPCHEN
+    global _TABDPT_HAEPPCHEN_JETZT, TABDPT_COMPILE
 
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -761,6 +942,14 @@ def main():
     parser.add_argument("--tabfm-dtype", default=TABFM_DTYPE,
                         choices=["bfloat16", "float32", "float16"],
                         help="Rechenpraezision von TabFM; aendert das Ergebnis, steht in modell_version")
+    parser.add_argument("--tabdpt-ensemble", type=int, default=TABDPT_ENSEMBLE,
+                        help="Durchgaenge, die TabDPT mittelt; aendert das Ergebnis, steht in modell_version")
+    parser.add_argument("--tabdpt-kontext", type=int, default=TABDPT_KONTEXT,
+                        help="Kontextzeilen bei TabDPT, 0 = alle; aendert das Ergebnis, steht in modell_version")
+    parser.add_argument("--tabdpt-haeppchen", type=int, default=TABDPT_HAEPPCHEN,
+                        help="Testzeilen je Durchgang bei TabDPT, 0 = Voreinstellung; aendert das Ergebnis nicht")
+    parser.add_argument("--tabdpt-ohne-compile", action="store_true",
+                        help="torch.compile bei TabDPT abschalten, falls es mit InductorError abbricht")
     args = parser.parse_args()
 
     TABPFN_VERSION = args.tabpfn_version
@@ -768,6 +957,11 @@ def main():
     _TABFM_BATCH_JETZT = TABFM_BATCH
     TABFM_CHUNK = args.tabfm_chunk
     TABFM_DTYPE = args.tabfm_dtype
+    TABDPT_ENSEMBLE = args.tabdpt_ensemble
+    TABDPT_KONTEXT = args.tabdpt_kontext
+    TABDPT_HAEPPCHEN = args.tabdpt_haeppchen
+    _TABDPT_HAEPPCHEN_JETZT = TABDPT_HAEPPCHEN
+    TABDPT_COMPILE = not args.tabdpt_ohne_compile
     if args.daten:
         DATA_DIR = Path(args.daten)
     if args.ausgabe:

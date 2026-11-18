@@ -251,10 +251,12 @@ Entscheidung, die getroffen werden muss.
 | `xgb` | XGBoost | — | — |
 | `tabpfn` | [TabPFN](https://github.com/PriorLabs/TabPFN) | TabPFN-3.5 | GPU nötig (auf CPU Grenze bei 5.000 Zeilen) |
 | `tabfm` | [TabFM](https://github.com/google-research/tabfm) (Google Research) | v1.0.0 | 500 Merkmale; GPU nötig, und das Gerät muss gesetzt werden |
+| `tabdpt` | [TabDPT](https://github.com/layer6ai-labs/TabDPT) (Layer 6 AI) | v1.3 | auf **echten** Tabellen vortrainiert; Schalter sitzen auf `predict()` |
 
-Beide Fundamentmodelle sind scikit-learn-kompatibel und werden erst beim
-Aufruf importiert — ein Lauf mit nur `rf` und `xgb` braucht weder PyTorch noch
-Modellgewichte.
+Alle drei Fundamentmodelle werden erst beim Aufruf importiert — ein Lauf mit
+nur `rf` und `xgb` braucht weder PyTorch noch Modellgewichte. TabPFN und TabFM
+sind unmittelbar scikit-learn-kompatibel, TabDPT bekommt eine dünne Hülle,
+siehe unten.
 
 **Zur TabPFN-Version:** Verwendet wird **TabPFN-3.5**, der aktuelle Stand. Die
 Gewichtsdatei heißt `tabpfn-v3.5-20260909.safetensors` und trägt damit ein Datum
@@ -474,10 +476,93 @@ ist in `bfloat16` entstanden (AUC 0,894161) und ist gleichzeitig die
 Gegenprobe — weicht eine andere Präzision dort deutlich ab oder liefert
 `nan`, ist sie unbrauchbar.
 
+### TabDPT, das dritte Fundamentmodell
+
+TabPFN und TabFM sind beide auf **synthetischen** Daten vortrainiert: Sie haben
+nie eine echte Tabelle gesehen, sondern Millionen aus einem Prior erzeugte.
+TabDPT ist das Gegenstück — es ist auf echten Tabellen trainiert und löst die
+Größenbeschränkung über Retrieval. Als drittes Modell prüft es damit eine
+andere Frage als ein weiteres synthetisches: ob die *Herkunft* der
+Trainingsdaten überhaupt einen Unterschied macht.
+
+Apache-2.0, `pip install tabdpt`, Gewichte von Hugging Face ohne Konto, und es
+kann Klassifikation und Regression — Letzteres ist Pflicht, 12 der 34
+Datensätze sind Regression.
+
+#### Was dagegen spricht, und in die Limitationen gehört
+
+Genau die Stärke ist auch das Risiko: **Kontamination.** Playground-Datensätze
+sind synthetische Nachbildungen echter Datensätze, und die Vorlagen liegen
+oft auf OpenML — also dort, wo TabDPT seine Trainingsdaten herhat. Es kann
+Originale gesehen haben, aus denen unsere Daten erzeugt wurden. Das entwertet
+den Vergleich nicht, aber es ist ein Konfundierer, und er muss benannt werden,
+bevor jemand anders ihn benennt. Bei TabPFN und TabFM besteht dieses Risiko
+nicht, und das ist beim Lesen der Ränge mitzudenken.
+
+#### Die Hülle, und warum sie kein Tuning ist
+
+`TabDPTHuelle` in `run_models.py` glättet vier Unterschiede. Keiner davon
+verändert das Modell; sie stellen nur her, was die anderen vier Modelle von
+sich aus können.
+
+1. **Die Schalter sitzen auf `predict()`**, nicht im Konstruktor:
+   `model.predict(X, n_ensembles=8, context_size=None, batch_size=None,
+   seed=42)`. Eine `Pipeline` ruft `predict(X)` selbst auf und gibt nichts
+   weiter, also werden die Werte in der Hülle gemerkt und beim Aufruf
+   eingesetzt.
+
+2. **`seed` ist `None` voreingestellt**, das Ensemble also nicht
+   wiederholbar. Die Hülle setzt `SEED` — dasselbe, was `random_state=SEED`
+   bei `rf`, `xgb` und TabPFN tut.
+
+3. **Wahrscheinlichkeiten mit Ensemble heißen `ensemble_predict_proba()`.**
+   `predict_proba()` kennt bei TabDPT gar kein `n_ensembles` und wäre ein
+   einzelner Durchgang — also ein anderes Modell als das, das `predict()`
+   benutzt. Das ist die unauffälligste Falle der ganzen Schnittstelle: Der
+   Aufruf funktioniert, liefert plausible Zahlen und misst etwas anderes.
+   Die Hülle ruft für beide Wege denselben auf.
+
+4. **`fit()` besteht per `assert` auf numpy** („X must be a numpy array"),
+   `y` kommt bei uns aber als `pandas.Series` aus dem Fold. Und `predict()`
+   gibt bei der Klassifikation Klassen*indizes* zurück; ein `classes_`, das
+   die Metriken brauchen, gibt es nicht. Die Hülle schiebt die Klassen je
+   Fold auf 0..k-1 zusammen (`np.unique(..., return_inverse=True)`) und
+   übersetzt zurück. Das Zusammenschieben ist nötig, weil TabDPT die Ausgabe
+   auf die ersten `num_classes` Spalten abschneidet — fehlt in einem Fold
+   eine seltene Klasse, zeigte Spalte 2 sonst auf die falsche.
+
+#### Was sich einstellen lässt
+
+| Schalter | Wirkung aufs Ergebnis | Wofür |
+|---|---|---|
+| `--tabdpt-haeppchen` | **keine** (nur Durchgänge) | Speicher. Voreinstellung der Bibliothek: 4096 auf der CPU, 128k auf der GPU |
+| `--tabdpt-kontext` | **ja** | Speicher und Zeit. Voreinstellung: alle Zeilen |
+| `--tabdpt-ensemble` | **ja** | Zeit. Voreinstellung: 8 Durchgänge |
+| `--tabdpt-ohne-compile` | praktisch keine | Notausgang, falls `torch.compile` mit `InductorError` abbricht |
+
+Bei Speichermangel verkleinert die Hauptschleife von selbst nur die
+**Häppchen** — erst auf 8192, dann halbierend bis 256. Den Kontext fasst sie
+nicht an, denn der würde das Ergebnis ändern. Das ist der Unterschied zu
+TabFM, wo beide Stellschrauben ergebnisneutral sind.
+
+`--tabdpt-kontext` verdient eine Erklärung, weil das TabDPT-Paper selbst mit
+2048 rechnet, die Bibliothek aber `None` voreingestellt hat, also alle Zeilen.
+Wir nehmen die Voreinstellung der Bibliothek, wie bei allen anderen Modellen
+auch — die Studie vergleicht ungetunte Voreinstellungen, nicht die
+Konfiguration aus dem jeweiligen Paper. Aus der Doku von `predict()`:
+
+> `context_size`: Maximum number of train points in the context. Uses all
+> points if `None`, which can lead to GPU OOMs.
+
+Wer den Wert setzt, muss es in `modell_version` wiederfinden können — deshalb
+steht er dort, und Zeilen mit verschiedenem Kontext dürfen nicht gemischt
+werden.
+
 ### Was „ungetunt“ heißt
 
-Gesetzt werden nur `random_state`, `n_jobs` und — bei TabFM — `device` und
-`batch_size`. Nichts davon ist ein Hyperparameter:
+Gesetzt werden nur `random_state`, `n_jobs` und — bei den Fundamentmodellen —
+`device`, die Bündelung und der Startwert. Nichts davon ist ein
+Hyperparameter:
 
 | Parameter | Zweck |
 |---|---|
@@ -486,6 +571,9 @@ Gesetzt werden nur `random_state`, `n_jobs` und — bei TabFM — `device` und
 | `device` | legt TabFM auf die GPU, die es sonst nicht findet |
 | `batch_size` | bündelt TabFMs Ensemble-Mitglieder je Durchgang |
 | `row_chunk_size` / `ffn_chunk_size` | zerlegt TabFMs Zwischenergebnisse passend zur Karte |
+| `seed` (TabDPT) | dasselbe wie `random_state`, nur an `predict()` übergeben |
+| `batch_size` (TabDPT) | zerlegt die Testzeilen in Durchgänge |
+| `verbose=False` (TabDPT) | nimmt den Fortschrittsbalken aus der Ausgabe |
 
 Alles andere bleibt auf der Voreinstellung der Bibliothek.
 

@@ -35,7 +35,8 @@ matplotlib>=3.8
 
 # Die Fundamentmodelle stehen bewusst NICHT hier. TabPFN laedt PyTorch und
 # Modellgewichte nach, TabFM wird aus dem Git-Repository installiert und
-# bringt eigene Festlegungen fuer scikit-learn und torch mit. Beide werden im
+# bringt eigene Festlegungen fuer scikit-learn und torch mit, TabDPT kommt von
+# PyPI und zieht torch, faiss und huggingface_hub mit. Alle drei werden im
 # Colab-Notebook in eigenen Laufzeiten installiert, siehe
 # notebooks/colab_run_models.ipynb.
 #
@@ -53,3 +54,11 @@ matplotlib>=3.8
 # Trotzdem bleiben die Laufzeiten getrennt: Das ist eine Beobachtung an einem
 # Tag mit einem Colab-Abbild, keine Zusage. Die Zelle im Notebook prueft die
 # Version nach der Installation und sagt es, wenn sie sich doch verschiebt.
+#
+# Fuer TabDPT ist dieselbe Pruefung im Notebook eingebaut (Abschnitt 8). Was
+# es mit scikit-learn macht, ist hier noch nicht beobachtet - die Zelle sagt
+# es. TabDPT nennt in der Ergebniszeile seine Paketversion, und die ist laut
+# README zugleich die Modellversion: "We currently update the minor version
+# number when a new model version is released, while the patch version number
+# is used for library changes that don't involve changes to the underlying
+# model."
