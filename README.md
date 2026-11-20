@@ -489,6 +489,13 @@ Apache-2.0, `pip install tabdpt`, Gewichte von Hugging Face ohne Konto, und es
 kann Klassifikation und Regression — Letzteres ist Pflicht, 12 der 34
 Datensätze sind Regression.
 
+TabDPT braucht keine Laufzeit für sich allein, sondern nur eine, in der
+danach **kein `rf` und `xgb` mehr** gerechnet wird: Die Installation zieht
+`torch`, `faiss` und `huggingface_hub` mit, und ob `scikit-learn` dabei auf
+1.6.1 bleibt, ist nicht beobachtet. Die Auswertung aus Abschnitt 4 dieser
+Anleitung darf dieselbe Laufzeit benutzen — `aggregate_ranks.py` importiert
+kein `scikit-learn`, es liest nur die Ergebnisdatei.
+
 #### Was dagegen spricht, und in die Limitationen gehört
 
 Genau die Stärke ist auch das Risiko: **Kontamination.** Playground-Datensätze
